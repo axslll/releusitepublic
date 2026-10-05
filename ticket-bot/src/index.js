@@ -67,6 +67,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ticketstats') return await handleStats(interaction);
       if (interaction.commandName === 'ticketpanel') {
+        // Discord already hides this from non-admins, but never trust that alone.
+        if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+          return await interaction.reply(notice('Only administrators can use this command.', { ephemeral: true, color: config.accentWarn }));
+        }
         const channel = interaction.options.getChannel('channel') ?? interaction.channel;
         await channel.send(panelMessage());
         return await interaction.reply(notice(`Panel posted in <#${channel.id}>.`, { ephemeral: true }));
