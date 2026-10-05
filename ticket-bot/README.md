@@ -17,7 +17,7 @@ A Discord ticket bot for Selyn.
 2. Under **Bot → Privileged Gateway Intents** enable **Server Members Intent** and **Message Content Intent**.
 3. Invite it with the `bot` and `applications.commands` scopes and the permissions *View Channels, Manage Channels, Manage Roles, Send Messages, Read Message History, Attach Files, Embed Links* (permission integer `268553232`).
 4. `cp .env.example .env` and fill in `DISCORD_TOKEN` (plus `GUILD_ID`, and `GROQ_API_KEY` from <https://console.groq.com/keys>).
-5. `npm install && npm start`
+5. `npm install && npm start` (or double-click `start.bat` on Windows)
 6. In your server run `/ticketpanel` to post the panel.
 
 ## Commands
