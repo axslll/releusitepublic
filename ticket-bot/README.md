@@ -25,7 +25,7 @@ A Discord ticket bot for Selyn.
 | Command | Who | What |
 |---|---|---|
 | `/ticketpanel [channel]` | Admins | Posts the "Open a Ticket" panel |
-| `/staffpanel` | Support staff | Inside a ticket: private controls to **Claim**, **Call Staff**, and **Pause/Resume AI** (the ticket opener never sees these) |
+| `/staffpanel` | Support staff | Inside a ticket: private controls: **Claim** / **Take Over**, **Call Staff**, **Pause/Resume AI**, and **Close Ticket** (the ticket opener never sees these) |
 | `/ticketstats` | Support staff | Shows open / total tickets per staff member |
 
 ## Teaching the AI about Selyn

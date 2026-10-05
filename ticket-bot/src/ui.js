@@ -164,7 +164,7 @@ export function offerResult(message, { color = config.accent, url } = {}) {
 }
 
 /** Staff-only controls, shown ephemerally by /staffpanel so the ticket opener never sees them. */
-export function staffPanel(ticket) {
+export function staffPanel(ticket, viewerId) {
   const status = [
     `🛡️ **Assigned to** ${ticket.staffId ? `<@${ticket.staffId}>` : ticket.offer ? `⏳ offered to <@${ticket.offer.staffId}>` : '— nobody yet'}`,
     `🤖 **AI assistant** ${ticket.ai ? '`● Active`' : '`○ Paused`'}`,
@@ -175,9 +175,11 @@ export function staffPanel(ticket) {
     .addSeparatorComponents(divider())
     .addActionRowComponents(
       row(
-        ...(ticket.staffId ? [] : [btn('ticket:claim', 'Claim', ButtonStyle.Success, '✋')]),
+        // Claim an unassigned ticket, or take one over from another staff member; not shown to whoever already has it.
+        ...(ticket.staffId === viewerId ? [] : [btn('ticket:claim', ticket.staffId ? 'Take Over' : 'Claim', ButtonStyle.Success, '✋')]),
         btn('ticket:add', 'Call Staff', ButtonStyle.Secondary, '👥'),
         btn('ticket:ai', ticket.ai ? 'Pause AI' : 'Resume AI', ButtonStyle.Secondary, '🤖'),
+        btn('ticket:close', 'Close Ticket', ButtonStyle.Danger, '🔒'),
       ),
     );
   return { components: [c], flags: V2_EPHEMERAL, allowedMentions: { users: [] } };

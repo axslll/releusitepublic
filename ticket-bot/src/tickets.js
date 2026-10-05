@@ -303,12 +303,19 @@ export async function handleTicketButton(interaction) {
 
     case 'ticket:claim': {
       if (!staff) return interaction.reply(ephemeral('Only support staff can claim tickets.', { color: config.accentWarn }));
-      if (ticket.staffId) return interaction.reply(ephemeral(`Already handled by <@${ticket.staffId}>.`, { color: config.accentWarn }));
+      if (ticket.staffId === interaction.user.id) return interaction.reply(ephemeral("You're already handling this ticket.", { color: config.accentWarn }));
       await interaction.deferUpdate();
-      log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} claimed it`);
+      const previous = ticket.staffId;
+      if (previous) {
+        // Taking over: the previous handler stays in the ticket as a helper.
+        log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} took it over from ${who(interaction.client, previous)}`);
+        if (!ticket.helpers.includes(previous)) store.update(ticket, { helpers: [...ticket.helpers, previous] });
+      } else {
+        log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} claimed it`);
+      }
       await endOffer(interaction.client, ticket, '✋ Another staff member claimed this ticket.', config.accent);
       await assignTicket(interaction.client, ticket, interaction.user.id);
-      return interaction.editReply(staffPanel(ticket));
+      return interaction.editReply(staffPanel(ticket, interaction.user.id));
     }
 
     case 'ticket:ai': {
@@ -317,7 +324,7 @@ export async function handleTicketButton(interaction) {
       store.update(ticket, { ai: !ticket.ai });
       await interaction.deferUpdate();
       await refreshTicketMessage(interaction.channel, ticket);
-      return interaction.editReply(staffPanel(ticket));
+      return interaction.editReply(staffPanel(ticket, interaction.user.id));
     }
 
     case 'ticket:add': {
@@ -487,5 +494,5 @@ export async function handleStaffPanel(interaction) {
   const ticket = store.byChannel(interaction.channelId);
   if (!ticket) return interaction.reply(ephemeral('Run this inside a ticket channel.', { color: config.accentWarn }));
   if (!isStaff(interaction.member)) return interaction.reply(ephemeral('Support staff only.', { color: config.accentWarn }));
-  return interaction.reply(staffPanel(ticket));
+  return interaction.reply(staffPanel(ticket, interaction.user.id));
 }
