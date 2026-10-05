@@ -12,10 +12,12 @@ import {
   cleanupChannel,
   handleMessage,
   handleModal,
+  handleOffer,
   handleOpenButton,
   handleStaffSelect,
   handleStats,
   handleTicketButton,
+  sweepOffers,
 } from './tickets.js';
 import { notice, panelMessage } from './ui.js';
 
@@ -53,6 +55,11 @@ client.once(Events.ClientReady, async (c) => {
     await c.application.commands.set(commands);
   }
   for (const guild of c.guilds.cache.values()) await guild.members.fetch().catch(() => {});
+
+  // Move on any ticket offer that wasn't answered in time (also catches offers that expired while offline).
+  const sweep = () => sweepOffers(c).catch((e) => console.error('Offer sweep failed:', e));
+  await sweep();
+  setInterval(sweep, 30_000);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -65,6 +72,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return await interaction.reply(notice(`Panel posted in <#${channel.id}>.`, { ephemeral: true }));
       }
     } else if (interaction.isButton()) {
+      if (interaction.customId.startsWith('offer:')) return await handleOffer(interaction);
       if (interaction.customId === 'ticket:open') return await handleOpenButton(interaction);
       if (interaction.customId.startsWith('ticket:')) return await handleTicketButton(interaction);
     } else if (interaction.isModalSubmit() && interaction.customId === 'ticket:modal') {

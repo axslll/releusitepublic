@@ -1,24 +1,33 @@
+/** Staff with no history start at the current minimum instead of 0, so new hires aren't flooded. */
+export function baselineTotal(staffIds, totals) {
+  const known = staffIds.filter((id) => totals[id] !== undefined).map((id) => totals[id]);
+  return known.length ? Math.min(...known) : 0;
+}
+
 /**
  * Fair ticket assignment.
  *
- * Staff with the fewest tickets handed out so far get the next one, so over time
- * everybody receives the same amount. Ties are broken by who currently has the fewest
- * open tickets, then by who was assigned longest ago.
+ * Whoever has accepted the fewest tickets so far gets the next offer, so over time everybody
+ * handles the same amount. Offers still waiting for an answer count as tentative tickets, so
+ * simultaneous tickets go to different people. Ties: fewest open tickets, then longest since
+ * their last accepted ticket.
  *
- * Staff who have never been assigned anything (new hires) start at the current minimum
- * instead of 0, so they don't get flooded while "catching up".
+ * `exclude` lists staff who already declined / let this ticket's offer expire.
  */
-export function pickStaff(staffIds, openTickets, totals = {}, lastAssigned = {}) {
-  if (!staffIds.length) return null;
+export function pickStaff(staffIds, tickets, totals = {}, lastAssigned = {}, exclude = []) {
+  const pool = staffIds.filter((id) => !exclude.includes(id));
+  if (!pool.length) return null;
 
-  const known = staffIds.filter((id) => totals[id] !== undefined).map((id) => totals[id]);
-  const baseline = known.length ? Math.min(...known) : 0;
-  const total = (id) => totals[id] ?? baseline;
-
+  const baseline = baselineTotal(staffIds, totals);
   const open = {};
-  for (const t of openTickets) if (t.staffId) open[t.staffId] = (open[t.staffId] || 0) + 1;
+  const pending = {};
+  for (const t of tickets) {
+    if (t.staffId) open[t.staffId] = (open[t.staffId] || 0) + 1;
+    else if (t.offer?.staffId) pending[t.offer.staffId] = (pending[t.offer.staffId] || 0) + 1;
+  }
+  const total = (id) => (totals[id] ?? baseline) + (pending[id] || 0);
 
-  return [...staffIds].sort(
+  return [...pool].sort(
     (a, b) =>
       total(a) - total(b) ||
       (open[a] || 0) - (open[b] || 0) ||

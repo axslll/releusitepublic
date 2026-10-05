@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pickStaff } from './assign.js';
+import { baselineTotal, pickStaff } from './assign.js';
 
 const FILE = path.resolve('data', 'tickets.json');
 let db = { counter: 0, tickets: {}, totals: {}, lastAssigned: {} };
@@ -21,23 +21,20 @@ function save() {
 export const store = {
   all: () => Object.values(db.tickets),
   byChannel: (channelId) => Object.values(db.tickets).find((t) => t.channelId === channelId),
+  byNumber: (n) => db.tickets[n],
   openByUser: (userId) => Object.values(db.tickets).filter((t) => t.userId === userId),
   totals: () => db.totals,
 
-  /** Synchronously reserves a ticket number and a staff member so concurrent opens stay fair. */
-  create({ userId, subject, description, staffIds }) {
-    const staffId = pickStaff(staffIds, this.all(), db.totals, db.lastAssigned);
+  create({ guildId, userId, subject, description }) {
     const number = ++db.counter;
-    if (staffId) {
-      // Staff with no history start at the current minimum (same baseline pickStaff uses).
-      const known = staffIds.filter((id) => db.totals[id] !== undefined).map((id) => db.totals[id]);
-      db.totals[staffId] = (db.totals[staffId] ?? (known.length ? Math.min(...known) : 0)) + 1;
-      db.lastAssigned[staffId] = Date.now();
-    }
     const ticket = {
       number,
+      guildId,
       userId,
-      staffId,
+      staffId: null, // set when a staff member accepts / claims
+      offer: null, // { staffId, expiresAt, dmChannelId, dmMessageId } while waiting for an answer
+      offered: [], // everyone this ticket has already been offered to
+      escalated: false, // nobody accepted: opened up to the whole support team
       subject,
       description,
       channelId: null,
@@ -52,10 +49,21 @@ export const store = {
     return ticket;
   },
 
-  /** Undo a reservation when the channel could not be created. */
-  abort(ticket) {
-    delete db.tickets[ticket.number];
-    if (ticket.staffId && db.totals[ticket.staffId]) db.totals[ticket.staffId]--;
+  /** Picks the next staff member in the fair rotation who hasn't been offered this ticket yet. */
+  nextOffer(ticket, staffIds, timeoutMs) {
+    const staffId = pickStaff(staffIds, this.all(), db.totals, db.lastAssigned, ticket.offered);
+    ticket.offer = staffId ? { staffId, expiresAt: Date.now() + timeoutMs, dmChannelId: null, dmMessageId: null } : null;
+    if (staffId) ticket.offered.push(staffId);
+    save();
+    return staffId;
+  },
+
+  /** Records an accepted / claimed ticket against the staff member's fair-share count. */
+  assign(ticket, staffId, staffIds) {
+    db.totals[staffId] = (db.totals[staffId] ?? baselineTotal(staffIds, db.totals)) + 1;
+    db.lastAssigned[staffId] = Date.now();
+    ticket.staffId = staffId;
+    ticket.offer = null;
     save();
   },
 

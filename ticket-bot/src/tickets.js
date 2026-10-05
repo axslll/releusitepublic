@@ -11,7 +11,16 @@ import {
 import { aiEnabled, askAI } from './ai.js';
 import { config } from './config.js';
 import { store } from './store.js';
-import { aiMessage, closeConfirm, notice, statsMessage, ticketMessage, V2_EPHEMERAL } from './ui.js';
+import {
+  aiMessage,
+  closeConfirm,
+  notice,
+  offerMessage,
+  offerResult,
+  statsMessage,
+  ticketMessage,
+  V2_EPHEMERAL,
+} from './ui.js';
 
 const TICKET_PERMS = {
   ViewChannel: true,
@@ -22,19 +31,22 @@ const TICKET_PERMS = {
 };
 const MAX_HISTORY = 30;
 const aiBusy = new Set();
+const advancing = new Set(); // ticket numbers whose offer is being moved to the next person
 
 export const isStaff = (member) =>
   Boolean(member?.roles.cache.has(config.supportRoleId) || member?.permissions.has(PermissionFlagsBits.Administrator));
 
 const ephemeral = (message, opts = {}) => notice(message, { ...opts, ephemeral: true });
+const pad = (n) => String(n).padStart(4, '0');
 
 async function staffIds(guild) {
-  let role = guild.roles.cache.get(config.supportRoleId) ?? (await guild.roles.fetch(config.supportRoleId));
+  const role = (await guild.roles.fetch(config.supportRoleId).catch(() => null)) ?? null;
   if (!role) return [];
-  if (role.members.size === 0) await guild.members.fetch();
-  role = guild.roles.cache.get(config.supportRoleId);
-  return role.members.filter((m) => !m.user.bot).map((m) => m.id);
+  if (role.members.size === 0) await guild.members.fetch().catch(() => {});
+  return guild.roles.cache.get(config.supportRoleId).members.filter((m) => !m.user.bot).map((m) => m.id);
 }
+
+const ticketChannel = (client, ticket) => client.guilds.cache.get(ticket.guildId)?.channels.cache.get(ticket.channelId);
 
 async function refreshTicketMessage(channel, ticket) {
   if (!ticket.messageId) return;
@@ -84,58 +96,164 @@ export async function handleModal(interaction) {
     return interaction.editReply(notice('You already have an open ticket.', { color: config.accentWarn }));
   }
 
-  const subject = interaction.fields.getTextInputValue('subject').trim();
-  const description = interaction.fields.getTextInputValue('description').trim();
-  const staff = await staffIds(guild);
-  const ticket = store.create({ userId: user.id, subject, description, staffIds: staff });
+  const ticket = store.create({
+    guildId: guild.id,
+    userId: user.id,
+    subject: interaction.fields.getTextInputValue('subject').trim(),
+    description: interaction.fields.getTextInputValue('description').trim(),
+  });
 
+  let channel;
   try {
-    const parent = config.categoryId && guild.channels.cache.get(config.categoryId)?.type === ChannelType.GuildCategory
-      ? config.categoryId
-      : undefined;
-    const name = `ticket-${String(ticket.number).padStart(4, '0')}-${user.username}`
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '')
-      .slice(0, 90);
+    const parent =
+      config.categoryId && guild.channels.cache.get(config.categoryId)?.type === ChannelType.GuildCategory
+        ? config.categoryId
+        : undefined;
+    const name = `ticket-${pad(ticket.number)}-${user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 90);
 
-    const overwrites = [
-      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: user.id, allow: Object.keys(TICKET_PERMS) },
-      { id: guild.members.me.id, allow: [...Object.keys(TICKET_PERMS), 'ManageChannels'] },
-    ];
-    if (ticket.staffId) overwrites.push({ id: ticket.staffId, allow: Object.keys(TICKET_PERMS) });
-
-    const channel = await guild.channels.create({
+    // Only the opener and the bot can see it until a staff member accepts.
+    channel = await guild.channels.create({
       name,
       type: ChannelType.GuildText,
       parent,
-      topic: `Ticket #${ticket.number} • ${subject}`.slice(0, 1024),
-      permissionOverwrites: overwrites,
+      topic: `Ticket #${ticket.number} • ${ticket.subject}`.slice(0, 1024),
+      permissionOverwrites: [
+        { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: user.id, allow: Object.keys(TICKET_PERMS) },
+        { id: guild.members.me.id, allow: [...Object.keys(TICKET_PERMS), 'ManageChannels'] },
+      ],
     });
-    store.update(ticket, { channelId: channel.id });
+    store.update(ticket, { channelId: channel.id, ai: aiEnabled() });
 
-    const sent = await channel.send({
-      ...ticketMessage({ ...ticket, ai: ticket.ai && aiEnabled() }),
-      allowedMentions: { users: [user.id, ...(ticket.staffId ? [ticket.staffId] : [])] },
-    });
-    store.update(ticket, { messageId: sent.id, ai: ticket.ai && aiEnabled() });
-
-    const ping = ticket.staffId ? `<@${ticket.staffId}>` : `<@&${config.supportRoleId}>`;
-    await channel.send(
-      notice(`${ping}, <@${user.id}> needs help. ${aiEnabled() ? 'While you get here, the AI assistant will answer questions.' : ''}`, {
-        mentions: ticket.staffId ? { users: [ticket.staffId] } : { roles: [config.supportRoleId] },
-      }),
-    );
-
-    return interaction.editReply(notice(`Your ticket is ready: <#${channel.id}>`, { color: config.accentOk }));
+    const sent = await channel.send({ ...ticketMessage(ticket), allowedMentions: { users: [user.id] } });
+    store.update(ticket, { messageId: sent.id });
   } catch (err) {
     console.error('Failed to create ticket channel:', err);
-    store.abort(ticket);
+    if (channel) await channel.delete().catch(() => {});
+    store.remove(ticket);
     return interaction.editReply(
       notice('Something went wrong creating your ticket. Please try again or contact a staff member.', {
         color: config.accentWarn,
       }),
     );
+  }
+
+  await interaction.editReply(notice(`Your ticket is ready: <#${channel.id}>`, { color: config.accentOk }));
+  await offerToNext(interaction.client, ticket).catch((e) => console.error('Offer failed:', e));
+}
+
+/* ------------------------- offers (DM accept / skip) ------------------------ */
+
+/** DMs the ticket to the next staff member in the fair rotation; escalates if there is nobody left. */
+async function offerToNext(client, ticket) {
+  if (advancing.has(ticket.number) || ticket.staffId) return;
+  advancing.add(ticket.number);
+  try {
+    const guild = client.guilds.cache.get(ticket.guildId);
+    const channel = ticketChannel(client, ticket);
+    if (!guild || !channel) return;
+
+    const staff = await staffIds(guild);
+    const opener = await client.users.fetch(ticket.userId).catch(() => null);
+
+    for (;;) {
+      const id = store.nextOffer(ticket, staff, config.offerTimeoutMs);
+      if (!id) break;
+      try {
+        const user = await client.users.fetch(id);
+        const dm = await user.send(offerMessage(ticket, opener?.username ?? 'Unknown user', guild.name));
+        store.update(ticket, { offer: { ...ticket.offer, dmChannelId: dm.channelId, dmMessageId: dm.id } });
+        await refreshTicketMessage(channel, ticket);
+        return;
+      } catch (err) {
+        // DMs closed etc. - treat it like a skip and move on.
+        console.warn(`Could not DM ${id} about ticket #${ticket.number}: ${err.message}`);
+        store.update(ticket, { offer: null });
+      }
+    }
+
+    // Nobody left to ask: open the ticket to the whole support team so anyone can Claim it.
+    store.update(ticket, { escalated: true });
+    await channel.permissionOverwrites.edit(config.supportRoleId, TICKET_PERMS).catch(() => {});
+    await refreshTicketMessage(channel, ticket);
+    await channel.send(
+      notice(`<@&${config.supportRoleId}> nobody has accepted this ticket yet — please press **Claim** if you can take it.`, {
+        mentions: { roles: [config.supportRoleId] },
+      }),
+    );
+  } finally {
+    advancing.delete(ticket.number);
+  }
+}
+
+/** Clears the pending offer and rewrites the DM that carried it. */
+async function endOffer(client, ticket, message, color) {
+  const offer = ticket.offer;
+  store.update(ticket, { offer: null });
+  if (!offer?.dmChannelId) return;
+  try {
+    const dm = await client.channels.fetch(offer.dmChannelId);
+    const msg = await dm.messages.fetch(offer.dmMessageId);
+    await msg.edit(offerResult(message, { color }));
+  } catch {
+    /* DM gone - nothing to update */
+  }
+}
+
+/** Gives the ticket to a staff member (accepted offer or manual claim). */
+async function assignTicket(client, ticket, staffId) {
+  const guild = client.guilds.cache.get(ticket.guildId);
+  const channel = ticketChannel(client, ticket);
+  store.assign(ticket, staffId, await staffIds(guild));
+  await channel.permissionOverwrites.edit(staffId, TICKET_PERMS);
+  await refreshTicketMessage(channel, ticket);
+  await channel.send(notice(`🛡️ <@${staffId}> is now handling this ticket.`, { mentions: { users: [staffId] } }));
+}
+
+export async function handleOffer(interaction) {
+  const [, action, number] = interaction.customId.split(':');
+  const ticket = store.byNumber(number);
+  const gone = () =>
+    interaction.update(
+      offerResult('This offer is no longer available (it expired, was taken by someone else, or the ticket was closed).', {
+        color: config.accentWarn,
+      }),
+    );
+
+  if (!ticket || ticket.offer?.staffId !== interaction.user.id || ticket.offer.expiresAt <= Date.now()) return gone();
+
+  if (action === 'skip') {
+    store.update(ticket, { offer: null });
+    await interaction.update(offerResult(`⏭️ You skipped ticket #${pad(ticket.number)}. It has been passed on.`));
+    return offerToNext(interaction.client, ticket);
+  }
+
+  const channel = ticketChannel(interaction.client, ticket);
+  if (!channel) return gone();
+  await assignTicket(interaction.client, ticket, interaction.user.id);
+  return interaction.update(
+    offerResult(`✅ You accepted ticket #${pad(ticket.number)}.`, {
+      color: config.accentOk,
+      url: `https://discord.com/channels/${ticket.guildId}/${ticket.channelId}`,
+    }),
+  );
+}
+
+/** Moves on any offer that has run out of time. Runs on a timer and at startup. */
+export async function sweepOffers(client) {
+  const now = Date.now();
+  for (const ticket of store.all()) {
+    if (!ticket.channelId || !ticket.messageId || ticket.staffId || ticket.escalated || advancing.has(ticket.number)) continue;
+    try {
+      if (ticket.offer && ticket.offer.expiresAt <= now) {
+        await endOffer(client, ticket, '⌛ You didn\'t respond in time, so this ticket was passed on.', config.accentWarn);
+        await offerToNext(client, ticket);
+      } else if (!ticket.offer) {
+        await offerToNext(client, ticket); // e.g. the bot restarted mid-handoff
+      }
+    } catch (err) {
+      console.error(`Sweep failed for ticket #${ticket.number}:`, err);
+    }
   }
 }
 
@@ -160,6 +278,14 @@ export async function handleTicketButton(interaction) {
       if (!staff && !owner) return interaction.reply(ephemeral('Only the ticket owner or staff can close this.', { color: config.accentWarn }));
       await interaction.update(ephemeral('Closing…'));
       return closeTicket(interaction, ticket);
+
+    case 'ticket:claim': {
+      if (!staff) return interaction.reply(ephemeral('Only support staff can claim tickets.', { color: config.accentWarn }));
+      if (ticket.staffId) return interaction.reply(ephemeral(`Already handled by <@${ticket.staffId}>.`, { color: config.accentWarn }));
+      await interaction.deferUpdate();
+      await endOffer(interaction.client, ticket, '✋ Another staff member claimed this ticket.', config.accent);
+      return assignTicket(interaction.client, ticket, interaction.user.id);
+    }
 
     case 'ticket:ai': {
       if (!staff) return interaction.reply(ephemeral('Only support staff can change this.', { color: config.accentWarn }));
@@ -214,7 +340,10 @@ export async function handleStaffSelect(interaction) {
   const parts = [];
   if (added.length) parts.push(`Added ${added.map((id) => `<@${id}>`).join(', ')}.`);
   if (skipped.length) parts.push(`Skipped ${skipped.map((id) => `<@${id}>`).join(', ')} (not support staff, a bot, or already here).`);
-  return interaction.update({ ...ephemeral(parts.join('\n'), { color: added.length ? config.accentOk : config.accentWarn }), allowedMentions: { users: [] } });
+  return interaction.update({
+    ...ephemeral(parts.join('\n'), { color: added.length ? config.accentOk : config.accentWarn }),
+    allowedMentions: { users: [] },
+  });
 }
 
 /* --------------------------------- closing --------------------------------- */
@@ -234,7 +363,7 @@ async function buildTranscript(channel, ticket) {
   }
   for (const h of ticket.history) if (h.role === 'assistant') lines.push({ at: h.at, who: 'Selyn AI', body: h.content });
   lines.sort((a, b) => a.at - b.at);
-  const header = `Ticket #${ticket.number} — ${ticket.subject}\nOpened by ${ticket.userId}, assigned to ${ticket.staffId ?? 'nobody'}\n${'-'.repeat(40)}\n`;
+  const header = `Ticket #${ticket.number} — ${ticket.subject}\nOpened by ${ticket.userId}, handled by ${ticket.staffId ?? 'nobody'}\n${'-'.repeat(40)}\n`;
   return header + lines.map((l) => `[${new Date(l.at).toISOString()}] ${l.who}: ${l.body}`).join('\n');
 }
 
@@ -245,11 +374,11 @@ async function closeTicket(interaction, ticket) {
       const log = await interaction.guild.channels.fetch(config.logChannelId).catch(() => null);
       if (log?.isTextBased()) {
         const file = new AttachmentBuilder(Buffer.from(await buildTranscript(channel, ticket)), {
-          name: `ticket-${String(ticket.number).padStart(4, '0')}.txt`,
+          name: `ticket-${pad(ticket.number)}.txt`,
         });
         await log.send({
           ...notice(
-            `### 🔒 Ticket #${ticket.number} closed\n**Subject:** ${ticket.subject}\n**Opened by:** <@${ticket.userId}>\n**Assigned to:** ${ticket.staffId ? `<@${ticket.staffId}>` : '—'}\n**Closed by:** <@${interaction.user.id}>`,
+            `### 🔒 Ticket #${ticket.number} closed\n**Subject:** ${ticket.subject}\n**Opened by:** <@${ticket.userId}>\n**Handled by:** ${ticket.staffId ? `<@${ticket.staffId}>` : '—'}\n**Closed by:** <@${interaction.user.id}>`,
             { mentions: { parse: [] } },
           ),
           files: [file],
@@ -259,9 +388,17 @@ async function closeTicket(interaction, ticket) {
   } catch (err) {
     console.error('Failed to save transcript:', err);
   }
+  await endOffer(interaction.client, ticket, '🔒 This ticket was closed before you responded.');
   store.remove(ticket);
   await channel.send(notice('🔒 Closing this ticket in 5 seconds…', { color: config.accentWarn })).catch(() => {});
   setTimeout(() => channel.delete(`Ticket closed by ${interaction.user.tag}`).catch(() => {}), 5000);
+}
+
+export async function cleanupChannel(channel) {
+  const ticket = store.byChannel(channel.id);
+  if (!ticket) return;
+  await endOffer(channel.client, ticket, '🔒 This ticket was closed before you responded.');
+  store.remove(ticket);
 }
 
 /* ------------------------------------ AI ----------------------------------- */
@@ -294,7 +431,7 @@ export async function handleMessage(message) {
   } catch (err) {
     console.error('AI reply failed:', err.message);
     await message.channel
-      .send(notice('🤖 The AI assistant is unavailable right now — your assigned staff member will help you.', { color: config.accentWarn }))
+      .send(notice('🤖 The AI assistant is unavailable right now — a support member will help you.', { color: config.accentWarn }))
       .catch(() => {});
   } finally {
     aiBusy.delete(ticket.number);
@@ -307,14 +444,14 @@ export async function handleStats(interaction) {
   if (!isStaff(interaction.member)) return interaction.reply(ephemeral('Support staff only.', { color: config.accentWarn }));
   const staff = await staffIds(interaction.guild);
   const totals = store.totals();
-  const open = store.all();
+  const tickets = store.all();
   const rows = staff
-    .map((id) => ({ id, total: totals[id] ?? 0, open: open.filter((t) => t.staffId === id).length }))
+    .map((id) => ({
+      id,
+      total: totals[id] ?? 0,
+      open: tickets.filter((t) => t.staffId === id).length,
+      pending: tickets.filter((t) => !t.staffId && t.offer?.staffId === id).length,
+    }))
     .sort((a, b) => b.total - a.total);
   return interaction.reply(statsMessage(rows));
-}
-
-export function cleanupChannel(channel) {
-  const ticket = store.byChannel(channel.id);
-  if (ticket) store.remove(ticket);
 }

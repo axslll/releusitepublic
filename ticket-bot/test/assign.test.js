@@ -33,6 +33,18 @@ test('new staff start at the current minimum instead of being flooded', () => {
 });
 
 test('ties go to whoever has fewer open tickets', () => {
-  const id = pickStaff(['a', 'b'], [{ staffId: 'a' }], { a: 1, b: 1 }, {});
-  assert.equal(id, 'b');
+  assert.equal(pickStaff(['a', 'b'], [{ staffId: 'a' }], { a: 1, b: 1 }, {}), 'b');
+});
+
+test('skips staff who already declined this ticket', () => {
+  assert.equal(pickStaff(['a', 'b'], [], { a: 0, b: 5 }, {}, ['a']), 'b');
+});
+
+test('returns null once everyone has been offered the ticket', () => {
+  assert.equal(pickStaff(['a', 'b'], [], {}, {}, ['a', 'b']), null);
+});
+
+test('pending offers count so simultaneous tickets go to different people', () => {
+  const tickets = [{ staffId: null, offer: { staffId: 'a' } }];
+  assert.equal(pickStaff(['a', 'b'], tickets, { a: 0, b: 0 }, {}), 'b');
 });
