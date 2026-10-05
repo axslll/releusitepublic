@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  FileBuilder,
   MessageFlags,
   SeparatorBuilder,
   SeparatorSpacingSize,
@@ -56,7 +57,9 @@ export function ticketMessage(ticket) {
       ? '⏳ Waiting for a support member to accept'
       : ticket.escalated
         ? '📣 Open to the whole support team — staff can claim it'
-        : '⏳ Finding a support member…';
+        : ticket.staffCalled === false
+          ? '🤖 The AI is helping first — a support member joins if needed'
+          : '⏳ Finding a support member…';
   const c = new ContainerBuilder()
     .setAccentColor(config.accent)
     .addTextDisplayComponents(
@@ -80,6 +83,7 @@ export function ticketMessage(ticket) {
     .addActionRowComponents(
       row(
         btn('ticket:close', 'Close', ButtonStyle.Danger, '🔒'),
+        ...(ticket.staffCalled === false ? [btn('ticket:human', 'Talk to a human', ButtonStyle.Secondary, '🙋')] : []),
       ),
     )
     .addTextDisplayComponents(text(`-# ${config.botName} • opened <t:${Math.floor(ticket.createdAt / 1000)}:R>`));
@@ -107,10 +111,11 @@ export function notice(message, { color = config.accent, ephemeral = false, ment
 export function closeConfirm() {
   const c = new ContainerBuilder()
     .setAccentColor(config.accentWarn)
-    .addTextDisplayComponents(text('### Close this ticket?\nThe channel will be deleted and a transcript saved.'))
+    .addTextDisplayComponents(text('### Close this ticket?\nThe channel will be deleted. Choose whether to also DM a transcript to the ticket opener and the staff.'))
     .addActionRowComponents(
       row(
-        btn('ticket:close:yes', 'Yes, close it', ButtonStyle.Danger, '🔒'),
+        btn('ticket:close:yes', 'Close', ButtonStyle.Danger, '🔒'),
+        btn('ticket:close:transcript', 'Close + send transcript', ButtonStyle.Primary, '📄'),
         btn('ticket:close:no', 'Cancel', ButtonStyle.Secondary),
       ),
     );
@@ -179,8 +184,18 @@ export function staffPanel(ticket, viewerId) {
         ...(ticket.staffId === viewerId ? [] : [btn('ticket:claim', ticket.staffId ? 'Take Over' : 'Claim', ButtonStyle.Success, '✋')]),
         btn('ticket:add', 'Call Staff', ButtonStyle.Secondary, '👥'),
         btn('ticket:ai', ticket.ai ? 'Pause AI' : 'Resume AI', ButtonStyle.Secondary, '🤖'),
+        btn('ticket:transcript', 'Send Transcript', ButtonStyle.Secondary, '📄'),
         btn('ticket:close', 'Close Ticket', ButtonStyle.Danger, '🔒'),
       ),
     );
   return { components: [c], flags: V2_EPHEMERAL, allowedMentions: { users: [] } };
+}
+
+/** A message carrying a transcript file (Components V2 only shows a file that a File component points at). */
+export function transcriptCard(message, filename) {
+  const c = new ContainerBuilder()
+    .setAccentColor(config.accent)
+    .addTextDisplayComponents(text(message))
+    .addFileComponents(new FileBuilder().setURL(`attachment://${filename}`));
+  return { components: [c], flags: V2, allowedMentions: { parse: [] } };
 }

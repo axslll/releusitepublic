@@ -21,10 +21,28 @@ export function imageUrls(attachments) {
     .map((a) => a.url);
 }
 
-/** Splits the AI's answer into the text to show and whether it asked for a human. */
+export const CLOSE_MARKER = '[ Close ticket ]';
+export const CLOSE_TRANSCRIPT_MARKER = '[ Close ticket with transcript ]';
+
+/**
+ * Splits the AI's answer into the text to show and the actions it asked for:
+ *   handoff - it wants a human ([CALL STAFF])
+ *   close   - false, 'plain' ([ Close ticket ]) or 'transcript' ([ Close ticket with transcript ])
+ * Closing wins over a hand-over if the model wrote both.
+ */
 export function splitHandoff(answer) {
-  const re = /\[\s*call\s*staff\s*\]/gi;
-  return { text: answer.replace(re, '').trim(), handoff: re.test(answer) };
+  const handoffRe = /\[\s*call\s*staff\s*\]/i;
+  const closeTranscriptRe = /\[\s*close\s*ticket\s*with\s*transcript\s*\]/i;
+  const closeRe = /\[\s*close\s*ticket\s*\]/i;
+  const withTranscript = closeTranscriptRe.test(answer);
+  const plain = closeRe.test(answer);
+  const text = answer
+    .replace(new RegExp(handoffRe, 'gi'), '')
+    .replace(new RegExp(closeTranscriptRe, 'gi'), '')
+    .replace(new RegExp(closeRe, 'gi'), '')
+    .trim();
+  const close = withTranscript ? 'transcript' : plain ? 'plain' : false;
+  return { text, handoff: handoffRe.test(answer) && !close, close };
 }
 
 /** Re-read on every call so edits to knowledge.md apply without a restart. */
@@ -51,8 +69,10 @@ function systemPrompt(ticket) {
     'How to handle each message (decide silently, then reply):',
     '1. COVERED - it matches the knowledge base and you have not given that fix yet: give the fix. Do NOT hand over in the same message, because the user has not tried it yet. Tell them to reply if it does not work.',
     '2. VAGUE - you cannot tell what the problem is (e.g. "hi", "it does not work", "help", an empty description): do NOT hand over. Ask them to say exactly what is not working - what they were doing, what happened, any error text - and that they can attach a screenshot. If you have already asked twice and they still have not said what is wrong, hand over.',
-    '3. NOT COVERED - you can tell what the topic is but the knowledge base has nothing for it (refunds, bans, payments or being charged, pricing, account problems, anything else): hand over right away. Do not ask follow-up questions about it - the staff member will. This beats rule 2: ask for details ONLY when you cannot tell what the topic is.',
-    '4. FAILED - they say the fix you gave did not work, they already tried it, they give up, ask for a human, or are upset: hand over.',
+    '3. OFF-TOPIC - nothing to do with Selyn or this support ticket (general chat, other games or software, how to play a game, homework, jokes, coding help, etc.): politely say you can only help with Selyn support, and ask if they have a Selyn question. Do NOT answer it, and do NOT hand over - staff must never be called for off-topic requests, even if the user insists or repeats it.',
+    '4. NOT COVERED - you can tell what the topic is but the knowledge base has nothing for it (refunds, bans, payments or being charged, pricing, account problems, anything else): hand over right away. Do not ask follow-up questions about it - the staff member will. This beats rule 2: ask for details ONLY when you cannot tell what the topic is. It only applies to Selyn-related topics - see rule 3 for everything else.',
+    '5. FAILED - they say the fix you gave did not work, they already tried it, they give up, ask for a human, or are upset: hand over.',
+    `6. SOLVED - the user clearly says their problem is fixed or that they need nothing else (e.g. "it works now", "that fixed it, thanks", "that's all"): say a short friendly goodbye and end your message with ${CLOSE_MARKER} on its own line to close the ticket. If they ask for a copy, transcript or record of the conversation, end with ${CLOSE_TRANSCRIPT_MARKER} instead. NEVER close while the problem is unresolved, on your first reply in a ticket, or when they only said "thanks" or "ok" without saying it worked - in that case ask whether it fixed the problem. Never write a close marker together with ${HANDOFF_MARKER}.`,
     `To hand over: write one short friendly sentence saying a staff member will take over, then ${HANDOFF_MARKER} on its own line. NEVER include ${HANDOFF_MARKER} in a message that gives a fix, asks the user a question, or solves their problem.`,
     '',
     '- Users may attach screenshots. Look at them for what is relevant to their problem (error messages, which Roblox version they use, etc.) and use the knowledge base to help.',
@@ -102,13 +122,14 @@ export async function askAI(ticket, history, images = []) {
       signal: AbortSignal.timeout(45_000),
     });
   let res = await send();
-  if (res.status === 429) {
-    // Rate limited (tokens per minute): wait the few seconds Groq asks for, once.
-    const wait = Number(res.headers.get('retry-after')) || 8;
-    if (wait <= 20) {
-      await new Promise((r) => setTimeout(r, (wait + 0.5) * 1000));
-      res = await send();
-    }
+  // Rate limited (tokens per minute): wait as long as Groq says, up to 3 retries.
+  for (let attempt = 0; res.status === 429 && attempt < 3; attempt++) {
+    const bodyText = await res.text();
+    const hint = bodyText.match(/try again in ([\d.]+)\s*(ms|s)/i);
+    const wait = Number(res.headers.get('retry-after')) || (hint ? Number(hint[1]) * (hint[2].toLowerCase() === 'ms' ? 0.001 : 1) : 5);
+    if (wait > 25) throw new Error(`Groq 429 (${model}): ${bodyText.slice(0, 200)}`);
+    await new Promise((r) => setTimeout(r, (wait + 0.5) * 1000));
+    res = await send();
   }
   if (!res.ok) throw new Error(`Groq ${res.status} (${model}): ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();

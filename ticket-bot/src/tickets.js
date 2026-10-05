@@ -11,6 +11,7 @@ import {
 import { aiEnabled, askAI, imageUrls, splitHandoff } from './ai.js';
 import { config } from './config.js';
 import { store } from './store.js';
+import { renderTranscript, toMessageData } from './transcript.js';
 import {
   aiMessage,
   closeConfirm,
@@ -20,6 +21,7 @@ import {
   staffPanel,
   statsMessage,
   ticketMessage,
+  transcriptCard,
   V2_EPHEMERAL,
 } from './ui.js';
 
@@ -154,11 +156,13 @@ export async function handleModal(interaction) {
 
   log(`Ticket #${ticket.number} opened by ${who(interaction.client, user.id)}: "${ticket.subject}"`);
   await interaction.editReply(notice(`Your ticket is ready: <#${channel.id}>`, { color: config.accentOk }));
-  await offerToNext(interaction.client, ticket).catch((e) => console.error('Offer failed:', e));
-
-  // Answer the opening question right away instead of waiting for a second message.
   if (ticket.ai && aiEnabled()) {
+    // The AI reads the title + description first. Staff are only asked if it can't help
+    // (runAI hands over) or if the opener presses "Talk to a human".
+    log(`Ticket #${ticket.number}: AI is handling it first - staff not called yet`);
     await runAI(channel, ticket, `${ticket.subject}\n\n${ticket.description}`.slice(0, 2000));
+  } else {
+    await offerToNext(interaction.client, ticket).catch((e) => console.error('Offer failed:', e));
   }
 }
 
@@ -168,6 +172,7 @@ export async function handleModal(interaction) {
 async function offerToNext(client, ticket) {
   if (advancing.has(ticket.number) || ticket.staffId) return;
   advancing.add(ticket.number);
+  if (ticket.staffCalled === false) store.update(ticket, { staffCalled: true });
   try {
     const guild = client.guilds.cache.get(ticket.guildId);
     const channel = ticketChannel(client, ticket);
@@ -186,7 +191,7 @@ async function offerToNext(client, ticket) {
         store.update(ticket, { offer: { ...ticket.offer, dmChannelId: dm.channelId, dmMessageId: dm.id } });
         log(`Ticket #${ticket.number}: DM sent to ${who(client, id)} - waiting until ${new Date(ticket.offer.expiresAt).toISOString()}`);
         await refreshTicketMessage(channel, ticket);
-        return;
+        return id;
       } catch (err) {
         // DMs closed etc. - treat it like a skip and move on.
         log(`Ticket #${ticket.number}: could NOT DM ${who(client, id)} (${err.code === 50007 ? 'their DMs are closed' : err.message}) - trying the next person`);
@@ -204,6 +209,7 @@ async function offerToNext(client, ticket) {
         mentions: { roles: [config.supportRoleId] },
       }),
     );
+    return null;
   } finally {
     advancing.delete(ticket.number);
   }
@@ -269,7 +275,7 @@ export async function handleOffer(interaction) {
 export async function sweepOffers(client) {
   const now = Date.now();
   for (const ticket of store.all()) {
-    if (!ticket.channelId || !ticket.messageId || ticket.staffId || ticket.escalated || advancing.has(ticket.number)) continue;
+    if (!ticket.channelId || !ticket.messageId || ticket.staffId || ticket.escalated || ticket.staffCalled === false || advancing.has(ticket.number)) continue;
     try {
       if (ticket.offer && ticket.offer.expiresAt <= now) {
         log(`Ticket #${ticket.number}: ${who(client, ticket.offer.staffId)} didn't respond in time - passing it on`);
@@ -302,9 +308,46 @@ export async function handleTicketButton(interaction) {
       return interaction.update(ephemeral('Cancelled — the ticket stays open.'));
 
     case 'ticket:close:yes':
+    case 'ticket:close:transcript':
       if (!staff && !owner) return interaction.reply(ephemeral('Only the ticket owner or staff can close this.', { color: config.accentWarn }));
       await interaction.update(ephemeral('Closing…'));
-      return closeTicket(interaction, ticket);
+      return finishTicket(interaction.client, interaction.channel, ticket, {
+        by: { id: interaction.user.id, label: interaction.user.tag },
+        withTranscript: interaction.customId === 'ticket:close:transcript',
+      });
+
+    case 'ticket:transcript': {
+      if (!staff) return interaction.reply(ephemeral('Only support staff can send transcripts.', { color: config.accentWarn }));
+      await interaction.deferReply({ flags: V2_EPHEMERAL });
+      let html;
+      try {
+        html = await buildTranscriptHtml(interaction.channel, ticket);
+      } catch (err) {
+        console.error('Failed to build transcript:', err);
+        return interaction.editReply(ephemeral("Couldn't build the transcript.", { color: config.accentWarn }));
+      }
+      const { sent, failed } = await sendTranscripts(
+        interaction.client,
+        ticket,
+        html,
+        [ticket.userId, ticket.staffId, interaction.user.id],
+        `Here is a copy of the conversation so far (requested by ${interaction.user.tag}).`,
+      );
+      const lines = [];
+      if (sent.length) lines.push(`📄 Transcript sent to ${mentionList(sent)}.`);
+      if (failed.length) lines.push(`⚠️ Couldn't DM ${mentionList(failed)} (their DMs are closed).`);
+      return interaction.editReply({ ...ephemeral(lines.join('\n'), { color: sent.length ? config.accentOk : config.accentWarn }), allowedMentions: { users: [] } });
+    }
+
+    case 'ticket:human': {
+      if (!owner && !staff) return interaction.reply(ephemeral('Only the ticket owner can do this.', { color: config.accentWarn }));
+      if (ticket.staffCalled !== false) return interaction.reply(ephemeral('A support member has already been asked.', { color: config.accentWarn }));
+      await interaction.deferUpdate();
+      log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} asked for a human`);
+      store.update(ticket, { ai: false });
+      await interaction.channel.send(notice('🙋 Asking a support member to join…'));
+      return offerToNext(interaction.client, ticket);
+    }
 
     case 'ticket:claim': {
       if (!staff) return interaction.reply(ephemeral('Only support staff can claim tickets.', { color: config.accentWarn }));
@@ -386,51 +429,122 @@ export async function handleStaffSelect(interaction) {
 
 /* --------------------------------- closing --------------------------------- */
 
-async function buildTranscript(channel, ticket) {
-  const lines = [];
+async function fetchAllMessages(channel) {
+  const all = [];
   let before;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const batch = await channel.messages.fetch({ limit: 100, before });
     if (!batch.size) break;
-    for (const m of batch.values()) {
-      if (m.author.bot) continue;
-      const files = m.attachments.map((a) => a.url).join(' ');
-      lines.push({ at: m.createdTimestamp, who: m.author.tag, body: `${m.content} ${files}`.trim() });
-    }
+    all.push(...batch.values());
     before = batch.last().id;
   }
-  for (const h of ticket.history) if (h.role === 'assistant') lines.push({ at: h.at, who: 'Selyn AI', body: h.content });
-  lines.sort((a, b) => a.at - b.at);
-  const header = `Ticket #${ticket.number} — ${ticket.subject}\nOpened by ${ticket.userId}, handled by ${ticket.staffId ?? 'nobody'}\n${'-'.repeat(40)}\n`;
-  return header + lines.map((l) => `[${new Date(l.at).toISOString()}] ${l.who}: ${l.body}`).join('\n');
+  return all.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 }
 
-async function closeTicket(interaction, ticket) {
-  const channel = interaction.channel;
-  log(`Ticket #${ticket.number} closed by ${who(interaction.client, interaction.user.id)}`);
+const transcriptName = (ticket) => `ticket-${pad(ticket.number)}-transcript.html`;
+
+/** The Discord-style HTML transcript of a ticket channel. `closedBy` is null while the ticket is still open. */
+async function buildTranscriptHtml(channel, ticket, closedBy = null) {
+  const { guild, client } = channel;
+  const userName = (id) => guild.members.cache.get(id)?.displayName ?? client.users.cache.get(id)?.displayName ?? null;
+  const messages = (await fetchAllMessages(channel)).map(toMessageData);
+  return renderTranscript({
+    meta: {
+      guildName: guild.name,
+      channelName: channel.name,
+      number: ticket.number,
+      subject: ticket.subject,
+      openedBy: userName(ticket.userId) ?? ticket.userId,
+      handler: ticket.staffId ? (userName(ticket.staffId) ?? ticket.staffId) : null,
+      openedAt: ticket.createdAt,
+      closedAt: closedBy ? Date.now() : null,
+      closedBy,
+      botName: config.botName,
+    },
+    messages,
+    r: { user: userName, role: (id) => guild.roles.cache.get(id)?.name ?? null, channel: (id) => guild.channels.cache.get(id)?.name ?? null },
+  });
+}
+
+const htmlFile = (html, ticket) => new AttachmentBuilder(Buffer.from(html, 'utf8'), { name: transcriptName(ticket) });
+
+/** DMs the transcript to one person. Returns true if it arrived. */
+async function dmTranscript(client, userId, ticket, html, why) {
   try {
-    if (config.logChannelId) {
-      const log = await interaction.guild.channels.fetch(config.logChannelId).catch(() => null);
-      if (log?.isTextBased()) {
-        const file = new AttachmentBuilder(Buffer.from(await buildTranscript(channel, ticket)), {
-          name: `ticket-${pad(ticket.number)}.txt`,
-        });
-        await log.send({
-          ...notice(
-            `### 🔒 Ticket #${ticket.number} closed\n**Subject:** ${ticket.subject}\n**Opened by:** <@${ticket.userId}>\n**Handled by:** ${ticket.staffId ? `<@${ticket.staffId}>` : '—'}\n**Closed by:** <@${interaction.user.id}>`,
-            { mentions: { parse: [] } },
+    const user = await client.users.fetch(userId);
+    await user.send({
+      ...transcriptCard(`📄 **Transcript of ticket #${pad(ticket.number)} — ${ticket.subject}**\n${why}\n-# Download the file and open it in your browser.`, transcriptName(ticket)),
+      files: [htmlFile(html, ticket)],
+    });
+    return true;
+  } catch (err) {
+    log(`Ticket #${ticket.number}: could NOT DM the transcript to ${who(client, userId)} (${err.code === 50007 ? 'their DMs are closed' : err.message})`);
+    return false;
+  }
+}
+
+/** Sends the transcript to each person; returns { sent: [ids], failed: [ids] }. */
+async function sendTranscripts(client, ticket, html, ids, why) {
+  const unique = [...new Set(ids.filter(Boolean))];
+  const results = await Promise.all(unique.map((id) => dmTranscript(client, id, ticket, html, why)));
+  const sent = unique.filter((_, i) => results[i]);
+  const failed = unique.filter((_, i) => !results[i]);
+  if (sent.length) log(`Ticket #${ticket.number}: transcript DMed to ${sent.map((id) => who(client, id)).join(', ')}`);
+  return { sent, failed };
+}
+
+const mentionList = (ids) => ids.map((id) => `<@${id}>`).join(', ');
+
+/**
+ * Closes a ticket: saves the transcript to the log channel, optionally DMs it to the opener and the
+ * staff, then deletes the channel. `by` is { id, label } - id is null when the AI closes it.
+ */
+async function finishTicket(client, channel, ticket, { by, withTranscript }) {
+  log(`Ticket #${ticket.number} closed by ${by.id ? who(client, by.id) : by.label}${withTranscript ? ' (with transcript)' : ''}`);
+
+  let html = null;
+  if (withTranscript || config.logChannelId) {
+    try {
+      html = await buildTranscriptHtml(channel, ticket, by.label);
+    } catch (err) {
+      console.error('Failed to build transcript:', err);
+    }
+  }
+
+  if (html && config.logChannelId) {
+    try {
+      const logChannel = await channel.guild.channels.fetch(config.logChannelId).catch(() => null);
+      if (logChannel?.isTextBased()) {
+        await logChannel.send({
+          ...transcriptCard(
+            `### 🔒 Ticket #${pad(ticket.number)} closed\n**Subject:** ${ticket.subject}\n**Opened by:** <@${ticket.userId}>\n**Handled by:** ${ticket.staffId ? `<@${ticket.staffId}>` : '—'}\n**Closed by:** ${by.id ? `<@${by.id}>` : by.label}`,
+            transcriptName(ticket),
           ),
-          files: [file],
+          files: [htmlFile(html, ticket)],
         });
       }
+    } catch (err) {
+      console.error('Failed to post transcript to the log channel:', err);
     }
-  } catch (err) {
-    console.error('Failed to save transcript:', err);
   }
-  await endOffer(interaction.client, ticket, '🔒 This ticket was closed before you responded.');
+
+  let delivery = '';
+  if (withTranscript) {
+    if (html) {
+      const { sent, failed } = await sendTranscripts(client, ticket, html, [ticket.userId, ticket.staffId, by.id], 'Your ticket was closed - here is a copy of the conversation.');
+      if (sent.length) delivery += `\n📄 Transcript sent to ${mentionList(sent)}.`;
+      if (failed.length) delivery += `\n⚠️ Couldn't DM the transcript to ${mentionList(failed)} (their DMs are closed).`;
+    } else {
+      delivery = "\n⚠️ Couldn't build the transcript.";
+    }
+  }
+
+  await endOffer(client, ticket, '🔒 This ticket was closed before you responded.');
   store.remove(ticket);
-  await channel.send(notice('🔒 Closing this ticket in 5 seconds…', { color: config.accentWarn })).catch(() => {});
-  setTimeout(() => channel.delete(`Ticket closed by ${interaction.user.tag}`).catch(() => {}), 5000);
+  await channel
+    .send(notice(`🔒 Closing this ticket in 5 seconds…${delivery}`, { color: config.accentWarn, mentions: { parse: [] } }))
+    .catch(() => {});
+  setTimeout(() => channel.delete(`Ticket closed by ${by.label}`).catch(() => {}), 5000);
 }
 
 export async function cleanupChannel(channel) {
@@ -473,17 +587,29 @@ async function runAI(channel, ticket, userText, images = []) {
     const history = [...ticket.history, { role: 'user', content, at: Date.now() }];
     const { answer, model } = await askAI(ticket, history.slice(-12), images);
     log(`Ticket #${ticket.number}: AI replied using ${model}${images.length ? ` (${images.length} image${images.length > 1 ? 's' : ''})` : ''}`);
-    const { text, handoff } = splitHandoff(answer);
+    const { text, handoff, close } = splitHandoff(answer);
+    const priorAnswers = ticket.history.filter((h) => h.role === 'assistant').length;
     store.update(ticket, {
       history: [...history, { role: 'assistant', content: text || answer, at: Date.now() }].slice(-MAX_HISTORY),
     });
     if (text) await channel.send(aiMessage(text));
-    if (handoff) await callStaffForHelp(channel, ticket, !text);
+    if (close && priorAnswers === 0) {
+      // Never close on the AI's very first reply in a ticket - the user hasn't had a chance to say it's fixed.
+      log(`Ticket #${ticket.number}: ignored a close request on the AI's first reply`);
+    } else if (close) {
+      log(`Ticket #${ticket.number}: the AI closed the ticket${close === 'transcript' ? ' (with transcript)' : ''}`);
+      await finishTicket(channel.client, channel, ticket, { by: { id: null, label: 'Selyn AI' }, withTranscript: close === 'transcript' });
+      return;
+    } else if (handoff) {
+      await callStaffForHelp(channel, ticket, !text);
+    }
   } catch (err) {
     console.error('AI reply failed:', err.message);
     await channel
       .send(notice('🤖 The AI assistant is unavailable right now — a support member will help you.', { color: config.accentWarn }))
       .catch(() => {});
+    // Never leave a ticket without a human just because the AI broke.
+    if (ticket.staffCalled === false) await offerToNext(channel.client, ticket).catch((e) => console.error('Offer failed:', e));
   } finally {
     aiBusy.delete(ticket.number);
   }
@@ -491,16 +617,19 @@ async function runAI(channel, ticket, userText, images = []) {
 
 /** The AI gave up (it wrote [CALL STAFF]): pause it and get a human's attention. */
 async function callStaffForHelp(channel, ticket, needsIntro) {
-  log(`Ticket #${ticket.number}: the AI handed over to staff`);
+  const client = channel.client;
   store.update(ticket, { ai: false });
   await refreshTicketMessage(channel, ticket);
 
   const intro = needsIntro ? "I can't help with this one, so I'm calling a support member for you. " : '';
+  let target; // who the AI's hand-over reached, for the console log
   if (ticket.staffId) {
+    target = `${who(client, ticket.staffId)} (the handler) - pinged in the ticket channel`;
     await channel.send(
       notice(`🙋 ${intro}<@${ticket.staffId}> — <@${ticket.userId}> needs a human.`, { mentions: { users: [ticket.staffId, ticket.userId] } }),
     );
   } else if (ticket.escalated) {
+    target = 'the whole support team - pinged the support role';
     await channel.send(
       notice(`🙋 ${intro}<@&${config.supportRoleId}> — <@${ticket.userId}> needs a human. Run \`/staffpanel\` and press **Claim**.`, {
         mentions: { roles: [config.supportRoleId], users: [ticket.userId] },
@@ -510,7 +639,14 @@ async function callStaffForHelp(channel, ticket, needsIntro) {
     await channel.send(
       notice(`🙋 ${intro}A support member has been asked and will join as soon as one accepts this ticket.`, { mentions: { users: [] } }),
     );
+    if (ticket.staffCalled === false) {
+      const offered = await offerToNext(client, ticket).catch((e) => (console.error('Offer failed:', e), null));
+      target = offered ? `${who(client, offered)} - offered by DM` : 'nobody in the rotation could be DMed - opened to the whole support team';
+    } else {
+      target = ticket.offer ? `${who(client, ticket.offer.staffId)} - already offered by DM, waiting for an answer` : 'staff were already asked';
+    }
   }
+  log(`Ticket #${ticket.number}: the AI handed over to staff -> ${target}`);
 }
 
 /* ---------------------------------- stats ---------------------------------- */

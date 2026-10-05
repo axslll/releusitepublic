@@ -34,6 +34,7 @@ export const store = {
       staffId: null, // set when a staff member accepts / claims
       offer: null, // { staffId, expiresAt, dmChannelId, dmMessageId } while waiting for an answer
       offered: [], // everyone this ticket has already been offered to
+      staffCalled: false, // false while the AI is handling the ticket on its own; true once staff are being asked
       escalated: false, // nobody accepted: opened up to the whole support team
       subject,
       description,

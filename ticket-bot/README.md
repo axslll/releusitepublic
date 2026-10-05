@@ -2,6 +2,7 @@
 
 A Discord ticket bot for Selyn.
 
+- **AI first** – when the AI is on, it reads the ticket's title and description and answers (or asks for details) before any staff are bothered. Staff are only asked when the AI hands over, it errors, or the opener presses **Talk to a human**. With no `GROQ_API_KEY`, staff are asked immediately.
 - **DM offers** – a new ticket is offered by DM to the next support member in a fair rotation, with **Accept** / **Skip** buttons. They have 3 hours (`OFFER_TIMEOUT_HOURS`); if they skip, ignore it, or have DMs closed, it moves on to the next person. They only get access to the ticket channel once they accept.
 - **Fair rotation** – whoever has accepted the fewest tickets gets the next offer; anyone level is picked at random, so the same person isn't always asked first (pending offers count, so simultaneous tickets go to different people). New staff start at the current minimum so they aren't flooded.
 - **Nobody accepted?** – once everyone has been asked, the ticket opens to the whole support team and anyone can claim it from `/staffpanel`.
@@ -9,7 +10,7 @@ A Discord ticket bot for Selyn.
 - **AI helper (Groq)** – text turns use `openai/gpt-oss-120b`; when a message has an image, just that reply switches to the vision model `qwen/qwen3.8-27b` (with the full conversation as context) and then it switches back.  answers the ticket opener's questions until a staff member speaks (or staff pause it). It only knows what you put in [`knowledge.md`](knowledge.md).
 - **Call other staff** – `/staffpanel` → **Call Staff** adds more support members to a ticket.
 - **Containers UI** – the panel, tickets and AI replies use Discord Components V2 containers.
-- **Transcripts** – on close, a transcript is posted to `LOG_CHANNEL_ID` (optional).
+- **Transcripts** – a Discord-style HTML replica of the ticket (dark theme, avatars, markdown, attachments, and the bot's own cards). Set `LOG_CHANNEL_ID` and every closed ticket's transcript is saved there. **Close + send transcript** and `/staffpanel` → **Send Transcript** DM it to the ticket opener and the staff (the ticket stays open for the latter). The AI can also close a ticket itself (`[ Close ticket ]` / `[ Close ticket with transcript ]`) once the user confirms it's fixed; it never closes on its first reply.
 
 ## Setup
 
@@ -25,7 +26,7 @@ A Discord ticket bot for Selyn.
 | Command | Who | What |
 |---|---|---|
 | `/ticketpanel [channel]` | Admins | Posts the "Open a Ticket" panel |
-| `/staffpanel` | Support staff | Inside a ticket: private controls: **Claim** / **Take Over**, **Call Staff**, **Pause/Resume AI**, and **Close Ticket** (the ticket opener never sees these) |
+| `/staffpanel` | Support staff | Inside a ticket: private controls: **Claim** / **Take Over**, **Call Staff**, **Pause/Resume AI**, and **Send Transcript**, and **Close Ticket** (the ticket opener never sees these) |
 | `/ticketstats` | Support staff | Shows open / total tickets per staff member |
 
 ## Teaching the AI about Selyn
