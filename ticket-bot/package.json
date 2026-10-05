@@ -1,0 +1,19 @@
+{
+  "name": "selyn-support-tickets",
+  "version": "1.0.0",
+  "description": "Selyn Support Tickets - Discord ticket bot with fair staff assignment and a Groq-powered AI helper",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.5"
+  }
+}
