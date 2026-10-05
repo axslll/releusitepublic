@@ -14,6 +14,7 @@ import {
   handleModal,
   handleOffer,
   handleOpenButton,
+  handleStaffPanel,
   handleStaffSelect,
   handleStats,
   handleTicketButton,
@@ -43,6 +44,7 @@ const commands = [
       o.setName('channel').setDescription('Where to post it (default: here)').addChannelTypes(ChannelType.GuildText),
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('staffpanel').setDescription('Staff controls for this ticket (claim, call staff, pause AI)'),
   new SlashCommandBuilder().setName('ticketstats').setDescription('Show how tickets are distributed across support staff'),
 ].map((c) => c.toJSON());
 
@@ -66,6 +68,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ticketstats') return await handleStats(interaction);
+      if (interaction.commandName === 'staffpanel') return await handleStaffPanel(interaction);
       if (interaction.commandName === 'ticketpanel') {
         // Discord already hides this from non-admins, but never trust that alone.
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {

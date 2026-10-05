@@ -4,10 +4,10 @@ A Discord ticket bot for Selyn.
 
 - **DM offers** – a new ticket is offered by DM to the next support member in a fair rotation, with **Accept** / **Skip** buttons. They have 3 hours (`OFFER_TIMEOUT_HOURS`); if they skip, ignore it, or have DMs closed, it moves on to the next person. They only get access to the ticket channel once they accept.
 - **Fair rotation** – whoever has accepted the fewest tickets gets the next offer; anyone level is picked at random, so the same person isn't always asked first (pending offers count, so simultaneous tickets go to different people). New staff start at the current minimum so they aren't flooded.
-- **Nobody accepted?** – once everyone has been asked, the ticket opens to the whole support team and anyone can press **Claim**.
+- **Nobody accepted?** – once everyone has been asked, the ticket opens to the whole support team and anyone can claim it from `/staffpanel`.
 - **Support role** – staff are everyone with role `1556339601067741247` (override with `SUPPORT_ROLE_ID`).
 - **AI helper (Groq)** – answers the ticket opener's questions until a staff member speaks (or staff pause it). It only knows what you put in [`knowledge.md`](knowledge.md).
-- **Call other staff** – the **Call Staff** button adds more support members to a ticket.
+- **Call other staff** – `/staffpanel` → **Call Staff** adds more support members to a ticket.
 - **Containers UI** – the panel, tickets and AI replies use Discord Components V2 containers.
 - **Transcripts** – on close, a transcript is posted to `LOG_CHANNEL_ID` (optional).
 
@@ -25,6 +25,7 @@ A Discord ticket bot for Selyn.
 | Command | Who | What |
 |---|---|---|
 | `/ticketpanel [channel]` | Admins | Posts the "Open a Ticket" panel |
+| `/staffpanel` | Support staff | Inside a ticket: private controls to **Claim**, **Call Staff**, and **Pause/Resume AI** (the ticket opener never sees these) |
 | `/ticketstats` | Support staff | Shows open / total tickets per staff member |
 
 ## Teaching the AI about Selyn

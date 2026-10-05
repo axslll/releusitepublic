@@ -55,7 +55,7 @@ export function ticketMessage(ticket) {
     : ticket.offer
       ? '⏳ Waiting for a support member to accept'
       : ticket.escalated
-        ? '📣 Open to the whole support team — press **Claim**'
+        ? '📣 Open to the whole support team — staff can claim it'
         : '⏳ Finding a support member…';
   const c = new ContainerBuilder()
     .setAccentColor(config.accent)
@@ -80,9 +80,6 @@ export function ticketMessage(ticket) {
     .addActionRowComponents(
       row(
         btn('ticket:close', 'Close', ButtonStyle.Danger, '🔒'),
-        ...(ticket.staffId ? [] : [btn('ticket:claim', 'Claim', ButtonStyle.Success, '✋')]),
-        btn('ticket:add', 'Call Staff', ButtonStyle.Secondary, '👥'),
-        btn('ticket:ai', ticket.ai ? 'Pause AI' : 'Resume AI', ButtonStyle.Secondary, '🤖'),
       ),
     )
     .addTextDisplayComponents(text(`-# ${config.botName} • opened <t:${Math.floor(ticket.createdAt / 1000)}:R>`));
@@ -163,4 +160,24 @@ export function offerResult(message, { color = config.accent, url } = {}) {
   const c = new ContainerBuilder().setAccentColor(color).addTextDisplayComponents(text(message));
   if (url) c.addActionRowComponents(row(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open ticket').setURL(url)));
   return { components: [c], flags: V2, allowedMentions: { parse: [] } };
+}
+
+/** Staff-only controls, shown ephemerally by /staffpanel so the ticket opener never sees them. */
+export function staffPanel(ticket) {
+  const status = [
+    `🛡️ **Assigned to** ${ticket.staffId ? `<@${ticket.staffId}>` : ticket.offer ? `⏳ offered to <@${ticket.offer.staffId}>` : '— nobody yet'}`,
+    `🤖 **AI assistant** ${ticket.ai ? '`● Active`' : '`○ Paused`'}`,
+  ].join('\n');
+  const c = new ContainerBuilder()
+    .setAccentColor(config.accent)
+    .addTextDisplayComponents(text(`### 🛡️ Staff controls — Ticket #${String(ticket.number).padStart(4, '0')}`), text(status))
+    .addSeparatorComponents(divider())
+    .addActionRowComponents(
+      row(
+        ...(ticket.staffId ? [] : [btn('ticket:claim', 'Claim', ButtonStyle.Success, '✋')]),
+        btn('ticket:add', 'Call Staff', ButtonStyle.Secondary, '👥'),
+        btn('ticket:ai', ticket.ai ? 'Pause AI' : 'Resume AI', ButtonStyle.Secondary, '🤖'),
+      ),
+    );
+  return { components: [c], flags: V2_EPHEMERAL, allowedMentions: { users: [] } };
 }

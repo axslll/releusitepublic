@@ -17,6 +17,7 @@ import {
   notice,
   offerMessage,
   offerResult,
+  staffPanel,
   statsMessage,
   ticketMessage,
   V2_EPHEMERAL,
@@ -35,6 +36,12 @@ const advancing = new Set(); // ticket numbers whose offer is being moved to the
 
 export const isStaff = (member) =>
   Boolean(member?.roles.cache.has(config.supportRoleId) || member?.permissions.has(PermissionFlagsBits.Administrator));
+
+const log = (message) => console.log(`[${new Date().toISOString()}] ${message}`);
+const who = (client, id) => {
+  const u = client.users.cache.get(id);
+  return u ? `${u.tag} (${id})` : String(id);
+};
 
 const ephemeral = (message, opts = {}) => notice(message, { ...opts, ephemeral: true });
 const pad = (n) => String(n).padStart(4, '0');
@@ -138,6 +145,7 @@ export async function handleModal(interaction) {
     );
   }
 
+  log(`Ticket #${ticket.number} opened by ${who(interaction.client, user.id)}: "${ticket.subject}"`);
   await interaction.editReply(notice(`Your ticket is ready: <#${channel.id}>`, { color: config.accentOk }));
   await offerToNext(interaction.client, ticket).catch((e) => console.error('Offer failed:', e));
 }
@@ -155,6 +163,7 @@ async function offerToNext(client, ticket) {
 
     const staff = await staffIds(guild);
     const opener = await client.users.fetch(ticket.userId).catch(() => null);
+    log(`Ticket #${ticket.number}: finding a staff member (${staff.length} in the support role, ${ticket.offered.length} already asked)`);
 
     for (;;) {
       const id = store.nextOffer(ticket, staff, config.offerTimeoutMs);
@@ -163,21 +172,23 @@ async function offerToNext(client, ticket) {
         const user = await client.users.fetch(id);
         const dm = await user.send(offerMessage(ticket, opener?.username ?? 'Unknown user', guild.name));
         store.update(ticket, { offer: { ...ticket.offer, dmChannelId: dm.channelId, dmMessageId: dm.id } });
+        log(`Ticket #${ticket.number}: DM sent to ${who(client, id)} - waiting until ${new Date(ticket.offer.expiresAt).toISOString()}`);
         await refreshTicketMessage(channel, ticket);
         return;
       } catch (err) {
         // DMs closed etc. - treat it like a skip and move on.
-        console.warn(`Could not DM ${id} about ticket #${ticket.number}: ${err.message}`);
+        log(`Ticket #${ticket.number}: could NOT DM ${who(client, id)} (${err.code === 50007 ? 'their DMs are closed' : err.message}) - trying the next person`);
         store.update(ticket, { offer: null });
       }
     }
 
     // Nobody left to ask: open the ticket to the whole support team so anyone can Claim it.
+    log(`Ticket #${ticket.number}: nobody accepted - opened to the whole support team`);
     store.update(ticket, { escalated: true });
     await channel.permissionOverwrites.edit(config.supportRoleId, TICKET_PERMS).catch(() => {});
     await refreshTicketMessage(channel, ticket);
     await channel.send(
-      notice(`<@&${config.supportRoleId}> nobody has accepted this ticket yet — please press **Claim** if you can take it.`, {
+      notice(`<@&${config.supportRoleId}> nobody has accepted this ticket yet — if you can take it, run \`/staffpanel\` and press **Claim**.`, {
         mentions: { roles: [config.supportRoleId] },
       }),
     );
@@ -207,7 +218,8 @@ async function assignTicket(client, ticket, staffId) {
   store.assign(ticket, staffId, await staffIds(guild));
   await channel.permissionOverwrites.edit(staffId, TICKET_PERMS);
   await refreshTicketMessage(channel, ticket);
-  await channel.send(notice(`🛡️ <@${staffId}> is now handling this ticket.`, { mentions: { users: [staffId] } }));
+  log(`Ticket #${ticket.number}: now handled by ${who(client, staffId)}`);
+  await channel.send(notice(`🛡️ <@${staffId}> is now handling this ticket.\n-# Staff: use \`/staffpanel\` for the staff controls.`, { mentions: { users: [staffId] } }));
 }
 
 export async function handleOffer(interaction) {
@@ -223,6 +235,7 @@ export async function handleOffer(interaction) {
   if (!ticket || ticket.offer?.staffId !== interaction.user.id || ticket.offer.expiresAt <= Date.now()) return gone();
 
   if (action === 'skip') {
+    log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} skipped it`);
     store.update(ticket, { offer: null });
     await interaction.update(offerResult(`⏭️ You skipped ticket #${pad(ticket.number)}. It has been passed on.`));
     return offerToNext(interaction.client, ticket);
@@ -230,6 +243,7 @@ export async function handleOffer(interaction) {
 
   const channel = ticketChannel(interaction.client, ticket);
   if (!channel) return gone();
+  log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} accepted it`);
   await assignTicket(interaction.client, ticket, interaction.user.id);
   return interaction.update(
     offerResult(`✅ You accepted ticket #${pad(ticket.number)}.`, {
@@ -246,6 +260,7 @@ export async function sweepOffers(client) {
     if (!ticket.channelId || !ticket.messageId || ticket.staffId || ticket.escalated || advancing.has(ticket.number)) continue;
     try {
       if (ticket.offer && ticket.offer.expiresAt <= now) {
+        log(`Ticket #${ticket.number}: ${who(client, ticket.offer.staffId)} didn't respond in time - passing it on`);
         await endOffer(client, ticket, '⌛ You didn\'t respond in time, so this ticket was passed on.', config.accentWarn);
         await offerToNext(client, ticket);
       } else if (!ticket.offer) {
@@ -283,8 +298,10 @@ export async function handleTicketButton(interaction) {
       if (!staff) return interaction.reply(ephemeral('Only support staff can claim tickets.', { color: config.accentWarn }));
       if (ticket.staffId) return interaction.reply(ephemeral(`Already handled by <@${ticket.staffId}>.`, { color: config.accentWarn }));
       await interaction.deferUpdate();
+      log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} claimed it`);
       await endOffer(interaction.client, ticket, '✋ Another staff member claimed this ticket.', config.accent);
-      return assignTicket(interaction.client, ticket, interaction.user.id);
+      await assignTicket(interaction.client, ticket, interaction.user.id);
+      return interaction.editReply(staffPanel(ticket));
     }
 
     case 'ticket:ai': {
@@ -292,7 +309,8 @@ export async function handleTicketButton(interaction) {
       if (!aiEnabled()) return interaction.reply(ephemeral('The AI assistant is not configured.', { color: config.accentWarn }));
       store.update(ticket, { ai: !ticket.ai });
       await interaction.deferUpdate();
-      return refreshTicketMessage(interaction.channel, ticket);
+      await refreshTicketMessage(interaction.channel, ticket);
+      return interaction.editReply(staffPanel(ticket));
     }
 
     case 'ticket:add': {
@@ -328,6 +346,7 @@ export async function handleStaffSelect(interaction) {
   }
 
   if (added.length) {
+    log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} called ${added.map((id) => who(interaction.client, id)).join(', ')}`);
     store.update(ticket, { helpers: [...ticket.helpers, ...added] });
     await interaction.channel.send(
       notice(`${added.map((id) => `<@${id}>`).join(' ')} — <@${interaction.user.id}> called you to this ticket.`, {
@@ -369,6 +388,7 @@ async function buildTranscript(channel, ticket) {
 
 async function closeTicket(interaction, ticket) {
   const channel = interaction.channel;
+  log(`Ticket #${ticket.number} closed by ${who(interaction.client, interaction.user.id)}`);
   try {
     if (config.logChannelId) {
       const log = await interaction.guild.channels.fetch(config.logChannelId).catch(() => null);
@@ -454,4 +474,11 @@ export async function handleStats(interaction) {
     }))
     .sort((a, b) => b.total - a.total);
   return interaction.reply(statsMessage(rows));
+}
+
+export async function handleStaffPanel(interaction) {
+  const ticket = store.byChannel(interaction.channelId);
+  if (!ticket) return interaction.reply(ephemeral('Run this inside a ticket channel.', { color: config.accentWarn }));
+  if (!isStaff(interaction.member)) return interaction.reply(ephemeral('Support staff only.', { color: config.accentWarn }));
+  return interaction.reply(staffPanel(ticket));
 }
