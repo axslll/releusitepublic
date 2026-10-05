@@ -6,7 +6,7 @@ export const config = {
   botName: 'Selyn Support Tickets',
   token: process.env.DISCORD_TOKEN,
   guildId: process.env.GUILD_ID || null,
-  supportRoleId: process.env.SUPPORT_ROLE_ID || '1556339601067741247',
+  supportRoleId: process.env.SUPPORT_ROLE_ID || '1556338723958816778',
   categoryId: process.env.TICKET_CATEGORY_ID || null,
   logChannelId: process.env.LOG_CHANNEL_ID || null,
   offerTimeoutMs: num(process.env.OFFER_TIMEOUT_HOURS, 3) * 60 * 60 * 1000,

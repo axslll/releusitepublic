@@ -31,6 +31,13 @@ const TICKET_PERMS = {
   EmbedLinks: true,
 };
 const MAX_HISTORY = 30;
+const STAFF_HELP = [
+  '**Staff controls** — inside the ticket, run `/staffpanel` (only staff can see it) to:',
+  '• **Call Staff** — add other support members to the ticket',
+  '• **Pause / Resume AI** — turn the AI helper off or on (it also pauses by itself once you reply)',
+  '• **Claim** — take over a ticket nobody has accepted',
+  'The **Close** button on the ticket ends it and saves a transcript.',
+].join('\n');
 const aiBusy = new Set();
 const advancing = new Set(); // ticket numbers whose offer is being moved to the next person
 
@@ -219,7 +226,7 @@ async function assignTicket(client, ticket, staffId) {
   await channel.permissionOverwrites.edit(staffId, TICKET_PERMS);
   await refreshTicketMessage(channel, ticket);
   log(`Ticket #${ticket.number}: now handled by ${who(client, staffId)}`);
-  await channel.send(notice(`🛡️ <@${staffId}> is now handling this ticket.\n-# Staff: use \`/staffpanel\` for the staff controls.`, { mentions: { users: [staffId] } }));
+  await channel.send(notice(`🛡️ <@${staffId}> is now handling this ticket.\n-# Staff: run \`/staffpanel\` to call other staff or pause/resume the AI.`, { mentions: { users: [staffId] } }));
 }
 
 export async function handleOffer(interaction) {
@@ -246,7 +253,7 @@ export async function handleOffer(interaction) {
   log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} accepted it`);
   await assignTicket(interaction.client, ticket, interaction.user.id);
   return interaction.update(
-    offerResult(`✅ You accepted ticket #${pad(ticket.number)}.`, {
+    offerResult(`✅ You accepted ticket #${pad(ticket.number)}.\n\n${STAFF_HELP}`, {
       color: config.accentOk,
       url: `https://discord.com/channels/${ticket.guildId}/${ticket.channelId}`,
     }),
@@ -349,7 +356,7 @@ export async function handleStaffSelect(interaction) {
     log(`Ticket #${ticket.number}: ${who(interaction.client, interaction.user.id)} called ${added.map((id) => who(interaction.client, id)).join(', ')}`);
     store.update(ticket, { helpers: [...ticket.helpers, ...added] });
     await interaction.channel.send(
-      notice(`${added.map((id) => `<@${id}>`).join(' ')} — <@${interaction.user.id}> called you to this ticket.`, {
+      notice(`${added.map((id) => `<@${id}>`).join(' ')} — <@${interaction.user.id}> called you to this ticket.\n-# Run \`/staffpanel\` for the staff controls.`, {
         mentions: { users: added },
       }),
     );

@@ -144,6 +144,7 @@ export function offerMessage(ticket, openerName, guildName) {
     .addSeparatorComponents(divider())
     .addTextDisplayComponents(
       text(`Do you want to take this one? Respond <t:${Math.floor(ticket.offer.expiresAt / 1000)}:R> or it moves on to the next support member.`),
+      text('-# After accepting you get access to the ticket channel. Run `/staffpanel` there for the staff controls.'),
     )
     .addActionRowComponents(
       row(
