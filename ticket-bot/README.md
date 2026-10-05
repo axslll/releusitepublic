@@ -30,7 +30,7 @@ A Discord ticket bot for Selyn.
 
 ## Teaching the AI about Selyn
 
-Edit `knowledge.md` – it's re-read on every AI reply, so no restart is needed.
+Edit `knowledge.md` – it's re-read on every AI reply, so no restart is needed. Write `[CALL STAFF]` wherever the AI should hand over to a human: the bot hides the marker, pauses the AI and pings the ticket's handler (or the support team if nobody has it yet).
 
 ## Notes
 

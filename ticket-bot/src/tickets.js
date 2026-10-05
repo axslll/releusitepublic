@@ -8,7 +8,7 @@ import {
   TextInputStyle,
   UserSelectMenuBuilder,
 } from 'discord.js';
-import { aiEnabled, askAI } from './ai.js';
+import { aiEnabled, askAI, splitHandoff } from './ai.js';
 import { config } from './config.js';
 import { store } from './store.js';
 import {
@@ -155,6 +155,11 @@ export async function handleModal(interaction) {
   log(`Ticket #${ticket.number} opened by ${who(interaction.client, user.id)}: "${ticket.subject}"`);
   await interaction.editReply(notice(`Your ticket is ready: <#${channel.id}>`, { color: config.accentOk }));
   await offerToNext(interaction.client, ticket).catch((e) => console.error('Offer failed:', e));
+
+  // Answer the opening question right away instead of waiting for a second message.
+  if (ticket.ai && aiEnabled()) {
+    await runAI(channel, ticket, `${ticket.subject}\n\n${ticket.description}`.slice(0, 2000));
+  }
 }
 
 /* ------------------------- offers (DM accept / skip) ------------------------ */
@@ -451,24 +456,55 @@ export async function handleMessage(message) {
     return;
   }
 
-  if (!ticket.ai || !aiEnabled() || !message.content.trim() || aiBusy.has(ticket.number)) return;
+  if (!ticket.ai || !aiEnabled() || !message.content.trim()) return;
+  await runAI(message.channel, ticket, message.content.slice(0, 2000));
+}
+
+/** Asks the AI to answer `userText`, posts the reply, and calls staff if the AI hands over. */
+async function runAI(channel, ticket, userText) {
+  if (aiBusy.has(ticket.number)) return;
   aiBusy.add(ticket.number);
   try {
-    await message.channel.sendTyping();
-    const history = [...ticket.history, { role: 'user', content: message.content.slice(0, 2000), at: Date.now() }];
-    // The ticket's own subject/description are already in the system prompt.
+    await channel.sendTyping();
+    const history = [...ticket.history, { role: 'user', content: userText, at: Date.now() }];
     const answer = await askAI(ticket, history.slice(-12));
+    const { text, handoff } = splitHandoff(answer);
     store.update(ticket, {
-      history: [...history, { role: 'assistant', content: answer, at: Date.now() }].slice(-MAX_HISTORY),
+      history: [...history, { role: 'assistant', content: text || answer, at: Date.now() }].slice(-MAX_HISTORY),
     });
-    await message.channel.send(aiMessage(answer));
+    if (text) await channel.send(aiMessage(text));
+    if (handoff) await callStaffForHelp(channel, ticket, !text);
   } catch (err) {
     console.error('AI reply failed:', err.message);
-    await message.channel
+    await channel
       .send(notice('🤖 The AI assistant is unavailable right now — a support member will help you.', { color: config.accentWarn }))
       .catch(() => {});
   } finally {
     aiBusy.delete(ticket.number);
+  }
+}
+
+/** The AI gave up (it wrote [CALL STAFF]): pause it and get a human's attention. */
+async function callStaffForHelp(channel, ticket, needsIntro) {
+  log(`Ticket #${ticket.number}: the AI handed over to staff`);
+  store.update(ticket, { ai: false });
+  await refreshTicketMessage(channel, ticket);
+
+  const intro = needsIntro ? "I can't help with this one, so I'm calling a support member for you. " : '';
+  if (ticket.staffId) {
+    await channel.send(
+      notice(`🙋 ${intro}<@${ticket.staffId}> — <@${ticket.userId}> needs a human.`, { mentions: { users: [ticket.staffId, ticket.userId] } }),
+    );
+  } else if (ticket.escalated) {
+    await channel.send(
+      notice(`🙋 ${intro}<@&${config.supportRoleId}> — <@${ticket.userId}> needs a human. Run \`/staffpanel\` and press **Claim**.`, {
+        mentions: { roles: [config.supportRoleId], users: [ticket.userId] },
+      }),
+    );
+  } else {
+    await channel.send(
+      notice(`🙋 ${intro}A support member has been asked and will join as soon as one accepts this ticket.`, { mentions: { users: [] } }),
+    );
   }
 }
 
