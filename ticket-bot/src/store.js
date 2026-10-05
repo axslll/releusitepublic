@@ -3,7 +3,7 @@ import path from 'node:path';
 import { baselineTotal, pickStaff } from './assign.js';
 
 const FILE = path.resolve('data', 'tickets.json');
-let db = { counter: 0, tickets: {}, totals: {}, lastAssigned: {} };
+let db = { counter: 0, tickets: {}, totals: {} };
 
 try {
   db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
@@ -51,7 +51,7 @@ export const store = {
 
   /** Picks the next staff member in the fair rotation who hasn't been offered this ticket yet. */
   nextOffer(ticket, staffIds, timeoutMs) {
-    const staffId = pickStaff(staffIds, this.all(), db.totals, db.lastAssigned, ticket.offered);
+    const staffId = pickStaff(staffIds, this.all(), db.totals, ticket.offered);
     ticket.offer = staffId ? { staffId, expiresAt: Date.now() + timeoutMs, dmChannelId: null, dmMessageId: null } : null;
     if (staffId) ticket.offered.push(staffId);
     save();
@@ -61,7 +61,6 @@ export const store = {
   /** Records an accepted / claimed ticket against the staff member's fair-share count. */
   assign(ticket, staffId, staffIds) {
     db.totals[staffId] = (db.totals[staffId] ?? baselineTotal(staffIds, db.totals)) + 1;
-    db.lastAssigned[staffId] = Date.now();
     ticket.staffId = staffId;
     ticket.offer = null;
     save();

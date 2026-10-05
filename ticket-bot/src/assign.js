@@ -9,12 +9,13 @@ export function baselineTotal(staffIds, totals) {
  *
  * Whoever has accepted the fewest tickets so far gets the next offer, so over time everybody
  * handles the same amount. Offers still waiting for an answer count as tentative tickets, so
- * simultaneous tickets go to different people. Ties: fewest open tickets, then longest since
- * their last accepted ticket.
+ * simultaneous tickets go to different people. Among people who are level on that, the one with
+ * the fewest open tickets wins, and anyone still tied is picked at random, so the same person
+ * isn't always asked first.
  *
  * `exclude` lists staff who already declined / let this ticket's offer expire.
  */
-export function pickStaff(staffIds, tickets, totals = {}, lastAssigned = {}, exclude = []) {
+export function pickStaff(staffIds, tickets, totals = {}, exclude = [], random = Math.random) {
   const pool = staffIds.filter((id) => !exclude.includes(id));
   if (!pool.length) return null;
 
@@ -25,13 +26,14 @@ export function pickStaff(staffIds, tickets, totals = {}, lastAssigned = {}, exc
     if (t.staffId) open[t.staffId] = (open[t.staffId] || 0) + 1;
     else if (t.offer?.staffId) pending[t.offer.staffId] = (pending[t.offer.staffId] || 0) + 1;
   }
-  const total = (id) => (totals[id] ?? baseline) + (pending[id] || 0);
+  const score = (id) => [(totals[id] ?? baseline) + (pending[id] || 0), open[id] || 0];
+  const cmp = (a, b) => a[0] - b[0] || a[1] - b[1];
 
-  return [...pool].sort(
-    (a, b) =>
-      total(a) - total(b) ||
-      (open[a] || 0) - (open[b] || 0) ||
-      (lastAssigned[a] || 0) - (lastAssigned[b] || 0) ||
-      a.localeCompare(b),
-  )[0];
+  let best = [];
+  for (const id of pool) {
+    const c = best.length ? cmp(score(id), score(best[0])) : -1;
+    if (c < 0) best = [id];
+    else if (c === 0) best.push(id);
+  }
+  return best[Math.floor(random() * best.length)];
 }
