@@ -12,7 +12,8 @@ export const config = {
   offerTimeoutMs: num(process.env.OFFER_TIMEOUT_HOURS, 3) * 60 * 60 * 1000,
   maxOpenPerUser: num(process.env.MAX_OPEN_PER_USER, 1),
   groqKey: process.env.GROQ_API_KEY || null,
-  groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+  groqModel: process.env.GROQ_MODEL || 'openai/gpt-oss-120b', // text-only turns
+  groqVisionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b', // used only for the reply to a message with images
   accent: 0x7c5cff,
   accentOk: 0x3ba55d,
   accentWarn: 0xed4245,

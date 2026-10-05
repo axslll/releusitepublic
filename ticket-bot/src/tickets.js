@@ -8,7 +8,7 @@ import {
   TextInputStyle,
   UserSelectMenuBuilder,
 } from 'discord.js';
-import { aiEnabled, askAI, splitHandoff } from './ai.js';
+import { aiEnabled, askAI, imageUrls, splitHandoff } from './ai.js';
 import { config } from './config.js';
 import { store } from './store.js';
 import {
@@ -456,18 +456,23 @@ export async function handleMessage(message) {
     return;
   }
 
-  if (!ticket.ai || !aiEnabled() || !message.content.trim()) return;
-  await runAI(message.channel, ticket, message.content.slice(0, 2000));
+  const images = imageUrls([...message.attachments.values()]);
+  if (!ticket.ai || !aiEnabled() || (!message.content.trim() && !images.length)) return;
+  await runAI(message.channel, ticket, message.content.slice(0, 2000), images);
 }
 
 /** Asks the AI to answer `userText`, posts the reply, and calls staff if the AI hands over. */
-async function runAI(channel, ticket, userText) {
+async function runAI(channel, ticket, userText, images = []) {
   if (aiBusy.has(ticket.number)) return;
   aiBusy.add(ticket.number);
   try {
     await channel.sendTyping();
-    const history = [...ticket.history, { role: 'user', content: userText, at: Date.now() }];
-    const answer = await askAI(ticket, history.slice(-12));
+    // Images aren't stored: the saved history keeps a text note, so later text-only turns still know one was sent.
+    const note = images.length ? `[The user attached ${images.length} image${images.length > 1 ? 's' : ''}]` : '';
+    const content = [userText.trim(), note].filter(Boolean).join('\n');
+    const history = [...ticket.history, { role: 'user', content, at: Date.now() }];
+    const { answer, model } = await askAI(ticket, history.slice(-12), images);
+    log(`Ticket #${ticket.number}: AI replied using ${model}${images.length ? ` (${images.length} image${images.length > 1 ? 's' : ''})` : ''}`);
     const { text, handoff } = splitHandoff(answer);
     store.update(ticket, {
       history: [...history, { role: 'assistant', content: text || answer, at: Date.now() }].slice(-MAX_HISTORY),

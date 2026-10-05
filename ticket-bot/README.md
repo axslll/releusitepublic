@@ -6,7 +6,7 @@ A Discord ticket bot for Selyn.
 - **Fair rotation** – whoever has accepted the fewest tickets gets the next offer; anyone level is picked at random, so the same person isn't always asked first (pending offers count, so simultaneous tickets go to different people). New staff start at the current minimum so they aren't flooded.
 - **Nobody accepted?** – once everyone has been asked, the ticket opens to the whole support team and anyone can claim it from `/staffpanel`.
 - **Support role** – staff are everyone with role `1556338723958816778` (override with `SUPPORT_ROLE_ID`).
-- **AI helper (Groq)** – answers the ticket opener's questions until a staff member speaks (or staff pause it). It only knows what you put in [`knowledge.md`](knowledge.md).
+- **AI helper (Groq)** – text turns use `openai/gpt-oss-120b`; when a message has an image, just that reply switches to the vision model `qwen/qwen3.8-27b` (with the full conversation as context) and then it switches back.  answers the ticket opener's questions until a staff member speaks (or staff pause it). It only knows what you put in [`knowledge.md`](knowledge.md).
 - **Call other staff** – `/staffpanel` → **Call Staff** adds more support members to a ticket.
 - **Containers UI** – the panel, tickets and AI replies use Discord Components V2 containers.
 - **Transcripts** – on close, a transcript is posted to `LOG_CHANNEL_ID` (optional).
