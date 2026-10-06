@@ -157,3 +157,20 @@ test('startup log lists the support team and the /moderation role', async () => 
   assert.ok(!log.includes('Robot#1'), 'bots are not listed');
   assert.ok(log.includes('NO members'), 'an empty role is called out');
 });
+
+test('anyone can still open a ticket from the panel button - one at a time', async () => {
+  for (const who of [people.stranger, people.opener, people.modOnly]) {
+    let shown = null;
+    const { i } = click(who, 'ticket:open', { extra: { showModal: async (m) => { shown = m; } } });
+    await T.handleOpenButton(i);
+    assert.ok(shown, `${who.tag} (no staff role, no admin) gets the ticket form`);
+  }
+  // someone who already has an open ticket is pointed to it instead of getting a second one
+  const { t } = setup();
+  store.update(t, { userId: people.stranger.id });
+  let shown = null;
+  const { i, out } = click(people.stranger, 'ticket:open', { extra: { showModal: async (m) => { shown = m; } } });
+  await T.handleOpenButton(i);
+  assert.equal(shown, null, 'no second form while they have an open ticket');
+  assert.ok(out.replies.join('').includes('already have an open ticket'));
+});
