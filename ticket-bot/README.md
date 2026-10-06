@@ -6,6 +6,8 @@ A Discord ticket bot for Selyn.
 - **DM offers** – a new ticket is offered by DM to the next support member in a fair rotation, with **Accept** / **Skip** buttons. They have 3 hours (`OFFER_TIMEOUT_HOURS`); if they skip, ignore it, or have DMs closed, it moves on to the next person. They only get access to the ticket channel once they accept.
 - **Fair rotation** – whoever has accepted the fewest tickets gets the next offer; anyone level is picked at random, so the same person isn't always asked first (pending offers count, so simultaneous tickets go to different people). New staff start at the current minimum so they aren't flooded.
 - **Nobody accepted?** – once everyone has been asked, the ticket opens to the whole support team and anyone can claim it from `/staffpanel`.
+- **Anti-ping** – nobody may ping the protected users/roles (defaults: user `880060587697123370`, roles `1556917397280260167` and `1556917485733941280`) or anyone who holds one of those roles. The bot deletes the message, times the pinger out for 5 minutes, replies in the channel ("please don't ping … open a ticket"), and DMs the people who were pinged (and the pinger). Mentions inside code blocks and reply-pings don't count; members of the protected roles can ping freely. Override with `PROTECTED_USER_IDS`, `PROTECTED_ROLE_IDS`, `PING_EXEMPT_ROLE_IDS`, `PING_TIMEOUT_MINUTES`.
+- **Backup Groq key** – set `GROQ_API_KEY_BACKUP`; if the main key is rate limited (or rejected) the bot switches to it automatically.
 - **Support role** – staff are everyone with role `1556338723958816778` (override with `SUPPORT_ROLE_ID`).
 - **AI helper (Groq)** – text turns use `openai/gpt-oss-120b`; when a message has an image, just that reply switches to the vision model `qwen/qwen3.8-27b` (with the full conversation as context) and then it switches back.  answers the ticket opener's questions until a staff member speaks (or staff pause it). It only knows what you put in [`knowledge.md`](knowledge.md).
 - **Call other staff** – `/staffpanel` → **Call Staff** adds more support members to a ticket.
@@ -16,7 +18,7 @@ A Discord ticket bot for Selyn.
 
 1. Create an application at <https://discord.com/developers/applications>, add a bot, name it **Selyn Support Tickets**.
 2. Under **Bot → Privileged Gateway Intents** enable **Server Members Intent** and **Message Content Intent**.
-3. Invite it with the `bot` and `applications.commands` scopes and the permissions *View Channels, Manage Channels, Manage Roles, Send Messages, Read Message History, Attach Files, Embed Links* (permission integer `268553232`).
+3. Invite it with the `bot` and `applications.commands` scopes and the permissions *View Channels, Manage Channels, Manage Roles, Manage Messages, Moderate Members, Send Messages, Read Message History, Attach Files, Embed Links* (permission integer `1099780189200`). Put the bot's role **above** the roles of the people it should be able to time out..
 4. `cp .env.example .env` and fill in `DISCORD_TOKEN` (plus `GUILD_ID`, and `GROQ_API_KEY` from <https://console.groq.com/keys>).
 5. `npm install && npm start` (or double-click `start.bat` on Windows)
 6. In your server run `/ticketpanel` to post the panel.

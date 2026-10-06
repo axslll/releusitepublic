@@ -89,6 +89,50 @@ function systemPrompt(ticket) {
   ].join('\n');
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const keyLimitedUntil = new Map(); // key -> timestamp until which it is rate limited / rejected
+
+/** Seconds to wait before retrying a 429, from the header or Groq's "try again in 6.05s / 870ms" message. */
+function retryAfterSeconds(res, bodyText) {
+  const header = Number(res.headers?.get?.('retry-after'));
+  if (header) return header;
+  const hint = bodyText.match(/try again in ([\d.]+)\s*(ms|s)/i);
+  return hint ? Number(hint[1]) * (hint[2].toLowerCase() === 'ms' ? 0.001 : 1) : 5;
+}
+
+/**
+ * Sends the request with the primary Groq key and falls over to the backup key when the primary is
+ * rate limited (429) or rejected (401/403). A key that just failed is skipped until it recovers.
+ * If every key is limited, waits for the soonest one (up to ~25s) and tries again.
+ */
+async function postToGroq(body, model) {
+  const keys = [config.groqKey, config.groqKeyBackup].filter(Boolean);
+  const send = (key) =>
+    fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
+    });
+
+  let lastError = '';
+  for (let round = 0; round < 4; round++) {
+    for (const [i, key] of keys.entries()) {
+      if ((keyLimitedUntil.get(key) ?? 0) > Date.now()) continue;
+      const res = await send(key);
+      if (res.status !== 429 && res.status !== 401 && res.status !== 403) return res;
+      lastError = (await res.text()).slice(0, 200);
+      const wait = res.status === 429 ? retryAfterSeconds(res, lastError) : 600; // a rejected key is parked for 10 min
+      keyLimitedUntil.set(key, Date.now() + wait * 1000);
+      console.warn(`Groq ${i === 0 ? 'primary' : 'backup'} key ${res.status === 429 ? 'rate limited' : `rejected (${res.status})`} (${model})${keys.length > 1 && i === 0 ? ' - trying the backup key' : ''}`);
+    }
+    const soonest = Math.min(...keys.map((k) => keyLimitedUntil.get(k) ?? 0)) - Date.now();
+    if (soonest > 25_000) break;
+    await sleep(Math.max(soonest, 0) + 500);
+  }
+  throw new Error(`Groq 429 (${model}): every API key is rate limited - ${lastError}`);
+}
+
 /**
  * Asks Groq for a reply. `history` is [{role: 'user'|'assistant', content}] with the newest user
  * message last. If `images` is non-empty, this one request goes to the vision model with the images
@@ -115,23 +159,7 @@ export async function askAI(ticket, history, images = []) {
   };
   if (model.startsWith('openai/gpt-oss')) body.reasoning_effort = 'low';
 
-  const send = () =>
-    fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.groqKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(45_000),
-    });
-  let res = await send();
-  // Rate limited (tokens per minute): wait as long as Groq says, up to 3 retries.
-  for (let attempt = 0; res.status === 429 && attempt < 3; attempt++) {
-    const bodyText = await res.text();
-    const hint = bodyText.match(/try again in ([\d.]+)\s*(ms|s)/i);
-    const wait = Number(res.headers.get('retry-after')) || (hint ? Number(hint[1]) * (hint[2].toLowerCase() === 'ms' ? 0.001 : 1) : 5);
-    if (wait > 25) throw new Error(`Groq 429 (${model}): ${bodyText.slice(0, 200)}`);
-    await new Promise((r) => setTimeout(r, (wait + 0.5) * 1000));
-    res = await send();
-  }
+  const res = await postToGroq(body, model);
   if (!res.ok) throw new Error(`Groq ${res.status} (${model}): ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
   // Some models put their reasoning inline in <think> tags - never show that to users.

@@ -3,10 +3,12 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  Partials,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
 import { aiEnabled } from './ai.js';
+import { handleProtectedPing } from './antiping.js';
 import { config } from './config.js';
 import {
   cleanupChannel,
@@ -34,6 +36,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent, // privileged: needed so the AI can read the ticket opener's messages
   ],
+  partials: [Partials.Message], // so edits to old (uncached) messages are still seen by the anti-ping check
 });
 
 const commands = [
@@ -95,7 +98,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-client.on(Events.MessageCreate, (message) => handleMessage(message).catch((e) => console.error('Message error:', e)));
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    if (await handleProtectedPing(message)) return; // deleted: nothing else to do with it
+    await handleMessage(message);
+  } catch (e) {
+    console.error('Message error:', e);
+  }
+});
+
+// Editing a ping into an existing message must not get around the anti-ping check.
+client.on(Events.MessageUpdate, async (_old, updated) => {
+  try {
+    const message = updated.partial ? await updated.fetch().catch(() => null) : updated;
+    if (message) await handleProtectedPing(message);
+  } catch (e) {
+    console.error('Message update error:', e);
+  }
+});
 client.on(Events.ChannelDelete, (channel) => cleanupChannel(channel));
 
 client.login(config.token);
