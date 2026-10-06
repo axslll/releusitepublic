@@ -58,7 +58,7 @@ export async function findProtectedPings(guild, content, authorId) {
   return { users, roles };
 }
 
-function isExempt(member) {
+export function isExempt(member) {
   if (config.protectedUserIds.includes(member.id)) return true;
   return member.roles.cache.some((r) => isProtectedRole(r.id) || config.pingExemptRoleIds.includes(r.id));
 }

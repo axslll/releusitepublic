@@ -21,6 +21,18 @@ export const config = {
   protectedRoleIds: list(process.env.PROTECTED_ROLE_IDS, ['1556917397280260167', '1556917485733941280']),
   pingExemptRoleIds: list(process.env.PING_EXEMPT_ROLE_IDS), // roles that may ping them anyway (members of the protected roles always may)
   pingTimeoutMs: num(process.env.PING_TIMEOUT_MINUTES, 5) * 60 * 1000,
+  // Chat moderation with a local model (see src/moderation.js). Thresholds are 0..1; higher = fewer deletions.
+  moderationEnabled: process.env.MODERATION !== 'off',
+  moderationDryRun: process.env.MODERATION_DRY_RUN === 'true', // only log what it would delete
+  moderationModelId: process.env.MODERATION_MODEL_ID || 'Xenova/toxic-bert',
+  moderationThresholds: {
+    hate: num(process.env.MOD_HATE_THRESHOLD, 0.5), // racism / hatred of a group
+    insult: num(process.env.MOD_INSULT_THRESHOLD, 0.5), // insult aimed at someone...
+    obscene: num(process.env.MOD_OBSCENE_THRESHOLD, 0.9), // ...that is also strongly profane
+  },
+  moderationTimeoutMs: num(process.env.MOD_TIMEOUT_MINUTES, 0) * 60 * 1000, // 0 = just delete
+  moderationLogChannelId: process.env.MOD_LOG_CHANNEL_ID || null,
+  moderationMaxQueue: 25, // if more messages than this are waiting, extras skip the check instead of piling up
   accent: 0x7c5cff,
   accentOk: 0x3ba55d,
   accentWarn: 0xed4245,
