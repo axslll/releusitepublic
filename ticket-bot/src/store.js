@@ -3,7 +3,7 @@ import path from 'node:path';
 import { baselineTotal, pickStaff } from './assign.js';
 
 const FILE = path.resolve('data', 'tickets.json');
-let db = { counter: 0, tickets: {}, totals: {} };
+let db = { counter: 0, tickets: {}, totals: {}, settings: {} };
 
 try {
   db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
@@ -24,6 +24,13 @@ export const store = {
   byNumber: (n) => db.tickets[n],
   openByUser: (userId) => Object.values(db.tickets).filter((t) => t.userId === userId),
   totals: () => db.totals,
+
+  /** Small persistent switches (e.g. whether staff turned moderation off). */
+  getSetting: (key, fallback) => db.settings?.[key] ?? fallback,
+  setSetting(key, value) {
+    db.settings = { ...db.settings, [key]: value };
+    save();
+  },
 
   create({ guildId, userId, subject, description }) {
     const number = ++db.counter;

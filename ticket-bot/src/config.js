@@ -32,6 +32,11 @@ export const config = {
   },
   moderationTimeoutMs: num(process.env.MOD_TIMEOUT_MINUTES, 0) * 60 * 1000, // 0 = just delete
   moderationLogChannelId: process.env.MOD_LOG_CHANNEL_ID || null,
+  // Moderation pauses itself when it uses more than this share of the whole machine's CPU, then resumes.
+  moderationCpuLimit: num(process.env.MOD_CPU_LIMIT_PERCENT, 25),
+  moderationCpuWindowMs: num(process.env.MOD_CPU_WINDOW_SECONDS, 30) * 1000,
+  moderationCpuPauseMs: num(process.env.MOD_CPU_PAUSE_MINUTES, 5) * 60 * 1000,
+  moderationCommandRoleId: process.env.MOD_COMMAND_ROLE_ID || '1556929397087412275', // who may use /moderation
   moderationMaxQueue: 25, // if more messages than this are waiting, extras skip the check instead of piling up
   accent: 0x7c5cff,
   accentOk: 0x3ba55d,

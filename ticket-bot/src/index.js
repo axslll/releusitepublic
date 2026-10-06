@@ -9,7 +9,7 @@ import {
 } from 'discord.js';
 import { aiEnabled } from './ai.js';
 import { handleProtectedPing } from './antiping.js';
-import { handleModeration, startModeration } from './moderation.js';
+import { handleModeration, handleModerationCommand, startModeration } from './moderation.js';
 import { config } from './config.js';
 import {
   cleanupChannel,
@@ -49,6 +49,16 @@ const commands = [
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('staffpanel').setDescription('Staff controls for this ticket (claim, call staff, pause AI)'),
+  new SlashCommandBuilder()
+    .setName('moderation')
+    .setDescription('Turn the chat moderation on or off (moderation role only)')
+    .addStringOption((o) =>
+      o
+        .setName('action')
+        .setDescription('What to do')
+        .setRequired(true)
+        .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }, { name: 'status', value: 'status' }),
+    ),
   new SlashCommandBuilder().setName('ticketstats').setDescription('Show how tickets are distributed across support staff'),
 ].map((c) => c.toJSON());
 
@@ -62,7 +72,7 @@ client.once(Events.ClientReady, async (c) => {
   }
   for (const guild of c.guilds.cache.values()) await guild.members.fetch().catch(() => {});
 
-  startModeration(); // loads the local moderation model in the background (never blocks or crashes the bot)
+  startModeration(c); // loads the local moderation model in the background (never blocks or crashes the bot)
 
   // Move on any ticket offer that wasn't answered in time (also catches offers that expired while offline).
   const sweep = () => sweepOffers(c).catch((e) => console.error('Offer sweep failed:', e));
@@ -75,6 +85,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ticketstats') return await handleStats(interaction);
       if (interaction.commandName === 'staffpanel') return await handleStaffPanel(interaction);
+      if (interaction.commandName === 'moderation') return await handleModerationCommand(interaction);
       if (interaction.commandName === 'ticketpanel') {
         // Discord already hides this from non-admins, but never trust that alone.
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {

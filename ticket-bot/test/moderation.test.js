@@ -1,7 +1,15 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Collection } from 'discord.js';
-import { cleanText, decide, deLeet, handleModeration, _setClassifier } from '../src/moderation.js';
+
+// The on/off switch is saved to disk, so run in a throw-away folder.
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'modtest-')));
+const { cleanText, decide, deLeet, handleModeration, handleModerationCommand, moderationStatus, _setClassifier, _setState, _setNow, _guard, _resetStats } = await import('../src/moderation.js');
+const { store } = await import('../src/store.js');
+const { config } = await import('../src/config.js');
 
 console.log = () => {};
 
@@ -133,4 +141,125 @@ test('a disguised message is scored in both forms and the higher score wins', as
   _setClassifier(async (t) => (t.includes('shit') ? labels(0, 0.95, 0.99) : labels(0, 0.05, 0.05)));
   assert.equal(await handleModeration(w.message('you piece of sh1t')), true);
   assert.equal(await handleModeration(w.message('version 1.3 works')), false);
+});
+
+/* ---------------- CPU guard + /moderation command ---------------- */
+
+const ok = () => labels(0, 0.05, 0.05);
+let clock = 1_000_000;
+const tick = (ms) => { clock += ms; };
+
+test('CPU guard: going over the limit pauses moderation, and it resumes by itself', async () => {
+  _setNow(() => clock);
+  store.setSetting('moderationEnabled', true);
+  const w = world();
+  _setClassifier(async () => ok());
+  assert.equal(moderationStatus().state, 'on');
+
+  // pretend the model just burned 40% of the machine for the whole window
+  const windowUs = config.moderationCpuWindowMs * 1000 * _guard.cores;
+  _guard.record(windowUs * 0.4);
+  assert.ok(_guard.percent() > config.moderationCpuLimit);
+  // the next scored message notices and trips the pause
+  await handleModeration(w.message('hello there friend'));
+  const paused = moderationStatus();
+  assert.equal(paused.state, 'paused');
+  assert.ok(paused.resumesAt > clock);
+
+  // while paused, even a flagged message is let through and the model is not used
+  let calls = 0;
+  _setClassifier(null); // clears the pause, so re-trip it manually below
+  _setClassifier(async () => { calls++; return labels(0.9, 0.9, 0.99); });
+  _guard.record(windowUs * 0.4);
+  await handleModeration(w.message('trip the guard'));   // this one is scored (and flagged), then the guard trips
+  assert.equal(moderationStatus().state, 'paused');
+  const before = calls;
+  assert.equal(await handleModeration(w.message('fuck you')), false);
+  assert.equal(calls, before, 'no model calls while paused');
+
+  // after the pause it comes back on its own
+  tick(config.moderationCpuPauseMs + 1000);
+  assert.equal(moderationStatus().state, 'on');
+  assert.equal(await handleModeration(w.message('fuck you')), true);
+});
+
+test('CPU guard: normal light use never pauses', async () => {
+  _setNow(() => clock);
+  const w = world();
+  _setClassifier(async () => ok());
+  for (let i = 0; i < 20; i++) { await handleModeration(w.message(`hello number ${i} friend`)); tick(500); }
+  assert.equal(moderationStatus().state, 'on');
+});
+
+const cmd = (action, roleIds = [config.moderationCommandRoleId]) => {
+  const replies = [];
+  return {
+    replies,
+    interaction: {
+      user: { tag: 'Mod#1' }, member: { roles: { cache: new Collection(roleIds.map((id) => [id, {}])) } },
+      options: { getString: () => action },
+      reply: async (m) => replies.push(JSON.stringify(m.components.map((c) => c.toJSON()))),
+    },
+  };
+};
+
+test('/moderation: only the moderation role may use it', async () => {
+  _setClassifier(async () => ok());
+  store.setSetting('moderationEnabled', true);
+  const c = cmd('off', ['123']);
+  await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('need the moderation role'));
+  assert.equal(moderationStatus().state, 'on', 'nothing changed');
+});
+
+test('/moderation off, status and on - and the choice is remembered', async () => {
+  _setClassifier(async () => ok());
+  store.setSetting('moderationEnabled', true);
+  const w = world();
+
+  let c = cmd('off'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('OFF'));
+  assert.equal(moderationStatus().state, 'off');
+  assert.equal(store.getSetting('moderationEnabled', true), false, 'saved so it survives a restart');
+  _setClassifier(async () => labels(0.9, 0.9, 0.99));
+  assert.equal(await handleModeration(w.message('fuck you')), false, 'off means nothing is deleted');
+
+  c = cmd('status'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('OFF') && c.replies[0].includes('CPU use'));
+
+  c = cmd('on'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('ON'));
+  assert.equal(moderationStatus().state, 'on');
+  assert.equal(await handleModeration(w.message('fuck you')), true);
+});
+
+test('/moderation on also ends a CPU pause, and status counts checked / deleted messages', async () => {
+  _setNow(() => clock);
+  _setClassifier(async () => labels(0.9, 0.9, 0.99));
+  store.setSetting('moderationEnabled', true);
+  _resetStats();
+  const w = world();
+  await handleModeration(w.message('fuck you'));
+  _guard.record(config.moderationCpuWindowMs * 1000 * _guard.cores * 0.5);
+  await handleModeration(w.message('fuck you again'));
+  assert.equal(moderationStatus().state, 'paused');
+
+  let c = cmd('status'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('PAUSED'));
+  c = cmd('on'); await handleModerationCommand(c.interaction);
+  assert.equal(moderationStatus().state, 'on');
+  assert.equal(moderationStatus().checked >= 2, true);
+  assert.equal(moderationStatus().deleted >= 1, true);
+});
+
+test('/moderation on is refused when the model is not available, and status says so', async () => {
+  _setClassifier(async () => ok());
+  _setState('unavailable');
+  let c = cmd('on'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes("isn't installed"));
+  c = cmd('status'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('UNAVAILABLE'));
+  _setState('loading');
+  c = cmd('status'); await handleModerationCommand(c.interaction);
+  assert.ok(c.replies[0].includes('LOADING'));
 });

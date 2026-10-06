@@ -1,5 +1,8 @@
+import os from 'node:os';
 import { config } from './config.js';
 import { isExempt } from './antiping.js';
+import { CpuGuard } from './cpuguard.js';
+import { store } from './store.js';
 import { notice } from './ui.js';
 
 /**
@@ -11,7 +14,10 @@ import { notice } from './ui.js';
  * Swearing that isn't aimed at anyone ("fucking hell, I forgot to do this") and mild insults ("dumb", "stupid")
  * score too low on one of the two and are left alone.
  *
- * It is optional: if @huggingface/transformers isn't installed or the model can't load, moderation is simply off.
+ * It is optional and switches itself off safely:
+ *   - if @huggingface/transformers isn't installed or the model can't load, moderation is simply off;
+ *   - if it uses more than MOD_CPU_LIMIT_PERCENT of the machine's CPU it pauses for a while, then resumes;
+ *   - staff with the moderation role can turn it on/off with /moderation.
  */
 
 const log = (message) => console.log(`[${new Date().toISOString()}] ${message}`);
@@ -20,19 +26,47 @@ const REASONS = {
   abuse: 'contained strong profanity aimed at another person',
 };
 
+let now = () => Date.now();
 let classifier = null; // (text, options) => Promise<[{label, score}]>
 let state = 'idle'; // idle | loading | ready | unavailable
 let pending = 0;
 let chain = Promise.resolve();
+let pausedUntil = 0; // set when the CPU guard trips
+let discordClient = null;
+const stats = { checked: 0, deleted: 0 };
+const guard = new CpuGuard({
+  limitPercent: config.moderationCpuLimit,
+  windowMs: config.moderationCpuWindowMs,
+  cores: os.cpus().length,
+  now: () => now(),
+});
 
-/** Test hook: use a fake classifier instead of loading the model. */
+/* ---- test hooks ---- */
 export function _setClassifier(fn) {
   classifier = fn;
   state = fn ? 'ready' : 'idle';
+  pausedUntil = 0;
+  guard.reset();
+}
+export const _setState = (s) => (state = s);
+export const _setNow = (fn) => (now = fn);
+export const _guard = guard;
+export const _resetStats = () => Object.assign(stats, { checked: 0, deleted: 0 });
+
+/** Posts a short status card to the moderation log channel, if one is set. */
+async function announce(text) {
+  if (!discordClient || !config.moderationLogChannelId) return;
+  try {
+    const channel = await discordClient.channels.fetch(config.moderationLogChannelId);
+    if (channel?.isTextBased()) await channel.send(notice(text, { color: config.accentWarn, mentions: { parse: [] } }));
+  } catch {
+    /* the log channel is optional */
+  }
 }
 
 /** Loads the model in the background at startup. Never throws. */
-export async function startModeration() {
+export async function startModeration(client = null) {
+  discordClient = client;
   if (!config.moderationEnabled) return log('Moderation is OFF (MODERATION=off)');
   if (state !== 'idle') return;
   state = 'loading';
@@ -41,12 +75,89 @@ export async function startModeration() {
     const { pipeline } = await import('@huggingface/transformers');
     classifier = await pipeline('text-classification', config.moderationModelId);
     state = 'ready';
-    log(`Moderation is ON${config.moderationDryRun ? ' (DRY RUN: only logs what it would delete)' : ''}`);
+    const manual = store.getSetting('moderationEnabled', true) ? '' : ' - but staff have it switched OFF (/moderation on)';
+    log(`Moderation is ready${config.moderationDryRun ? ' (DRY RUN: only logs what it would delete)' : ''}${manual}`);
   } catch (err) {
     state = 'unavailable';
     log(`Moderation is OFF - the local model isn't available (${err.message.split('\n')[0]}). Run "npm install" to add it.`);
   }
 }
+
+/* ---- on / off / paused ---- */
+
+/** Resumes by itself once the CPU pause is over. */
+function checkResume() {
+  if (pausedUntil && pausedUntil <= now()) {
+    pausedUntil = 0;
+    guard.reset();
+    log('Moderation: resumed after the CPU pause');
+    announce('✅ Chat moderation has resumed after its CPU pause.');
+  }
+}
+
+function pauseForCpu() {
+  const percent = guard.percent();
+  pausedUntil = now() + config.moderationCpuPauseMs;
+  const minutes = Math.round(config.moderationCpuPauseMs / 60000);
+  log(`Moderation: PAUSED for ${minutes} min - it used ${percent.toFixed(1)}% of the machine's CPU (limit ${config.moderationCpuLimit}%)`);
+  announce(`⏸️ Chat moderation paused for ${minutes} minutes: it used ${percent.toFixed(1)}% of the machine's CPU (limit ${config.moderationCpuLimit}%). It will switch itself back on.`);
+}
+
+/** Where moderation currently stands. */
+export function moderationStatus() {
+  checkResume();
+  const base = { cpu: guard.percent(), limit: config.moderationCpuLimit, windowSeconds: Math.round(config.moderationCpuWindowMs / 1000), ...stats, dryRun: config.moderationDryRun };
+  if (!config.moderationEnabled) return { ...base, state: 'disabled' }; // MODERATION=off in .env
+  if (state === 'unavailable') return { ...base, state: 'unavailable' };
+  if (state !== 'ready') return { ...base, state: 'loading' };
+  if (!store.getSetting('moderationEnabled', true)) return { ...base, state: 'off' }; // staff turned it off
+  if (pausedUntil > now()) return { ...base, state: 'paused', resumesAt: pausedUntil };
+  return { ...base, state: 'on' };
+}
+
+/** `/moderation on|off|status` - only for people with MOD_COMMAND_ROLE_ID. */
+export async function handleModerationCommand(interaction) {
+  const reply = (text, color) => interaction.reply(notice(text, { ephemeral: true, color: color ?? config.accent, mentions: { parse: [] } }));
+  if (!interaction.member?.roles?.cache?.has(config.moderationCommandRoleId)) {
+    return reply('You need the moderation role to use this command.', config.accentWarn);
+  }
+
+  const action = interaction.options.getString('action');
+  const who = interaction.user.tag;
+  if (action === 'off') {
+    store.setSetting('moderationEnabled', false);
+    log(`Moderation: switched OFF by ${who}`);
+  } else if (action === 'on') {
+    if (!config.moderationEnabled) return reply('Moderation is disabled in the bot\'s settings (`MODERATION=off` in `.env`), so it cannot be turned on here.', config.accentWarn);
+    if (state === 'unavailable') return reply("The moderation model isn't installed on the bot's machine, so it cannot be turned on. Run `npm install` there and restart the bot.", config.accentWarn);
+    store.setSetting('moderationEnabled', true);
+    pausedUntil = 0; // turning it on also ends a CPU pause
+    guard.reset();
+    log(`Moderation: switched ON by ${who}`);
+  }
+
+  const s = moderationStatus();
+  const line =
+    {
+      on: `🟢 **ON**${s.dryRun ? ' (dry run: only logs what it would delete)' : ''}`,
+      off: '🔴 **OFF** (turned off by staff)',
+      paused: `⏸️ **PAUSED** for using too much CPU - resumes <t:${Math.floor((s.resumesAt ?? 0) / 1000)}:R> (or run \`/moderation on\`)`,
+      disabled: '⚫ **DISABLED** in the bot settings (`MODERATION=off`)',
+      unavailable: '⚠️ **UNAVAILABLE** - the model is not installed on the bot\'s machine',
+      loading: '⏳ **LOADING** the model...',
+    }[s.state] ?? s.state;
+  return reply(
+    [
+      `### 🛡️ Chat moderation`,
+      line,
+      `**CPU use** (last ${s.windowSeconds}s): ${s.cpu.toFixed(1)}% of the machine (pauses above ${s.limit}%)`,
+      `**Since the bot started:** ${s.checked} messages checked, ${s.deleted} deleted`,
+    ].join('\n'),
+    s.state === 'on' ? config.accentOk : config.accent,
+  );
+}
+
+/* ---- scoring ---- */
 
 /** Strips things that aren't the person's own words, so they can't affect the score. */
 export function cleanText(content) {
@@ -77,20 +188,31 @@ export function decide(scores, t = config.moderationThresholds) {
   return { delete: false, reason: null };
 }
 
-/** Scores one message, one at a time. Returns null when the model is busy, slow or unavailable (the message is then let through). */
+/**
+ * Scores one message, one at a time, and records the CPU the model used. Returns null when the model is busy,
+ * slow, paused or unavailable (the message is then let through).
+ */
 function score(text) {
-  if (state !== 'ready' || !classifier) return Promise.resolve(null);
+  if (state !== 'ready' || !classifier || pausedUntil > now()) return Promise.resolve(null);
   if (pending >= config.moderationMaxQueue) return Promise.resolve(null);
   pending++;
-  const run = chain.then(() =>
-    Promise.race([
-      classifier(text, { top_k: null }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 10_000)),
-    ]),
-  );
+  const run = chain.then(async () => {
+    if (pausedUntil > now()) return null; // the guard tripped while this was queued
+    const before = process.cpuUsage();
+    try {
+      return await Promise.race([
+        classifier(text, { top_k: null }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 10_000)),
+      ]);
+    } finally {
+      const used = process.cpuUsage(before);
+      guard.record(used.user + used.system); // CPU time across all threads while the model ran
+      if (!pausedUntil && guard.exceeded()) pauseForCpu();
+    }
+  });
   chain = run.then(() => {}, () => {});
   return run
-    .then((labels) => Object.fromEntries(labels.map((l) => [l.label, l.score])))
+    .then((labels) => (labels ? Object.fromEntries(labels.map((l) => [l.label, l.score])) : null))
     .catch((err) => (log(`Moderation: could not score a message (${err.message})`), null))
     .finally(() => pending--);
 }
@@ -113,7 +235,8 @@ const pct = (n) => Math.round((n ?? 0) * 100);
 
 /** Returns true if the message was removed. */
 export async function handleModeration(message) {
-  if (state !== 'ready' || !message.guild || message.author?.bot || message.webhookId || !message.content) return false;
+  if (!message.guild || message.author?.bot || message.webhookId || !message.content) return false;
+  if (moderationStatus().state !== 'on') return false;
   const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
   if (!member || isExempt(member)) return false;
 
@@ -121,6 +244,7 @@ export async function handleModeration(message) {
   if (!text) return false;
   const scores = await scoreMessage(text);
   if (!scores) return false;
+  stats.checked++;
   const verdict = decide(scores);
   if (!verdict.delete) return false;
 
@@ -132,6 +256,7 @@ export async function handleModeration(message) {
   }
 
   const deleted = await message.delete().then(() => true, (err) => (log(`Moderation: could not delete the message (${err.message})`), false));
+  if (deleted) stats.deleted++;
   let timedOut = false;
   if (config.moderationTimeoutMs > 0 && member.moderatable) {
     timedOut = await member.timeout(config.moderationTimeoutMs, `Moderation: ${verdict.reason}`).then(() => true, () => false);
