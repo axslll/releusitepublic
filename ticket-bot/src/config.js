@@ -37,7 +37,7 @@ export const config = {
   moderationCpuLimit: num(process.env.MOD_CPU_LIMIT_PERCENT, 25),
   moderationCpuWindowMs: num(process.env.MOD_CPU_WINDOW_SECONDS, 30) * 1000,
   moderationCpuPauseMs: num(process.env.MOD_CPU_PAUSE_MINUTES, 5) * 60 * 1000,
-  moderationCommandRoleId: process.env.MOD_COMMAND_ROLE_ID || '1556917485733941280', // who may use /moderation
+  moderationCommandRoleId: process.env.MOD_COMMAND_ROLE_ID || '1556268367659147284', // who may use /moderation
   moderationMaxQueue: 25, // if more messages than this are waiting, extras skip the check instead of piling up
   accent: 0x7c5cff,
   accentOk: 0x3ba55d,

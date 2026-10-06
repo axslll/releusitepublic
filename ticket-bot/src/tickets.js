@@ -18,6 +18,7 @@ import {
   notice,
   offerMessage,
   offerResult,
+  panelMessage,
   staffPanel,
   statsMessage,
   ticketMessage,
@@ -672,4 +673,14 @@ export async function handleStaffPanel(interaction) {
   if (!ticket) return interaction.reply(ephemeral('Run this inside a ticket channel.', { color: config.accentWarn }));
   if (!isStaff(interaction.member)) return interaction.reply(ephemeral('Support staff only.', { color: config.accentWarn }));
   return interaction.reply(staffPanel(ticket, interaction.user.id));
+}
+
+/** `/ticketpanel` - administrators only (Discord hides it from others too, but the bot never relies on that). */
+export async function handleTicketPanelCommand(interaction) {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply(ephemeral('Only administrators can use this command.', { color: config.accentWarn }));
+  }
+  const channel = interaction.options.getChannel('channel') ?? interaction.channel;
+  await channel.send(panelMessage());
+  return interaction.reply(ephemeral(`Panel posted in <#${channel.id}>.`));
 }

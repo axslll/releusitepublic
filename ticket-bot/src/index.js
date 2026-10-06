@@ -21,9 +21,11 @@ import {
   handleStaffSelect,
   handleStats,
   handleTicketButton,
+  handleTicketPanelCommand,
   sweepOffers,
 } from './tickets.js';
-import { notice, panelMessage } from './ui.js';
+import { logTeams } from './startup.js';
+import { notice } from './ui.js';
 
 if (!config.token) {
   console.error('Missing DISCORD_TOKEN. Copy .env.example to .env and fill it in.');
@@ -78,6 +80,7 @@ client.once(Events.ClientReady, async (c) => {
   }
   for (const guild of c.guilds.cache.values()) await guild.members.fetch().catch(() => {});
 
+  await logTeams(c); // who is on the support team / who can use /moderation
   startModeration(c); // loads the local moderation model in the background (never blocks or crashes the bot)
 
   // Move on any ticket offer that wasn't answered in time (also catches offers that expired while offline).
@@ -92,15 +95,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (interaction.commandName === 'ticketstats') return await handleStats(interaction);
       if (interaction.commandName === 'staffpanel') return await handleStaffPanel(interaction);
       if (interaction.commandName === 'moderation') return await handleModerationCommand(interaction);
-      if (interaction.commandName === 'ticketpanel') {
-        // Discord already hides this from non-admins, but never trust that alone.
-        if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-          return await interaction.reply(notice('Only administrators can use this command.', { ephemeral: true, color: config.accentWarn }));
-        }
-        const channel = interaction.options.getChannel('channel') ?? interaction.channel;
-        await channel.send(panelMessage());
-        return await interaction.reply(notice(`Panel posted in <#${channel.id}>.`, { ephemeral: true }));
-      }
+      if (interaction.commandName === 'ticketpanel') return await handleTicketPanelCommand(interaction);
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith('offer:')) return await handleOffer(interaction);
       if (interaction.customId === 'ticket:open') return await handleOpenButton(interaction);
