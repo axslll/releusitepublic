@@ -159,7 +159,8 @@ test('startup log lists the support team and the /moderation role', async () => 
 });
 
 test('anyone can still open a ticket from the panel button - one at a time', async () => {
-  for (const who of [people.stranger, people.opener, people.modOnly]) {
+  const fresh = { id: '777777777777777777', tag: 'Newcomer#1', member: memberWith([]) }; // has no ticket yet
+  for (const who of [people.stranger, fresh, people.modOnly]) {
     let shown = null;
     const { i } = click(who, 'ticket:open', { extra: { showModal: async (m) => { shown = m; } } });
     await T.handleOpenButton(i);
