@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { testModeOn } from './testmode.js';
 import { notice } from './ui.js';
 
 /**
@@ -69,7 +70,7 @@ const minutes = () => Math.round(config.pingTimeoutMs / 60000);
 export async function handleProtectedPing(message) {
   if (!message.guild || message.author?.bot || message.webhookId || !message.content) return false;
   const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
-  if (!member || isExempt(member)) return false;
+  if (!member || (!testModeOn() && isExempt(member))) return false; // test mode checks the protected people too
 
   const { guild, channel, client } = message;
   const hit = await findProtectedPings(guild, message.content, message.author.id);

@@ -1,7 +1,15 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Collection } from 'discord.js';
-import { extractMentions, findProtectedPings, handleProtectedPing, resetPingCooldowns } from '../src/antiping.js';
+
+// Test mode is saved to disk, so run in a throw-away folder.
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'pingtest-')));
+const { extractMentions, findProtectedPings, handleProtectedPing, resetPingCooldowns } = await import('../src/antiping.js');
+const { setTestMode } = await import('../src/testmode.js');
+const { store } = await import('../src/store.js');
 
 const OWNER = '880060587697123370'; // protected user
 const ROLE_A = '1556917397280260167'; // protected roles
@@ -115,4 +123,15 @@ test('the same person is not DMed again for the same pinger within 5 minutes', a
   await handleProtectedPing(w.send(`<@${OWNER}> two`));
   assert.equal(w.dms.filter((d) => d.to === 'Axsl').length, 1);
   assert.equal(w.deleted.length, 2, 'but every message is still deleted');
+});
+
+test('test mode: protected users and role holders are checked too, and it expires by itself', async () => {
+  const w = world();
+  const owner = w.owner; // a protected person pinging another protected person
+  assert.equal(await handleProtectedPing(w.send(`<@${HOLDER}> hi`, owner)), false, 'normally exempt');
+  setTestMode(true);
+  assert.equal(await handleProtectedPing(w.send(`<@${HOLDER}> hi`, owner)), true, 'test mode checks them');
+  store.setSetting('testModeUntil', Date.now() - 1000); // 30 minutes are up
+  assert.equal(await handleProtectedPing(w.send(`<@${HOLDER}> hi again`, owner)), false, 'back to normal');
+  setTestMode(false);
 });

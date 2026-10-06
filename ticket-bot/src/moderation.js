@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { isExempt } from './antiping.js';
 import { CpuGuard } from './cpuguard.js';
 import { store } from './store.js';
+import { setTestMode, testModeOn, testModeUntil } from './testmode.js';
 import { notice } from './ui.js';
 
 /**
@@ -119,7 +120,9 @@ export function moderationStatus() {
 export async function handleModerationCommand(interaction) {
   const reply = (text, color) => interaction.reply(notice(text, { ephemeral: true, color: color ?? config.accent, mentions: { parse: [] } }));
   if (!interaction.member?.roles?.cache?.has(config.moderationCommandRoleId)) {
-    return reply('You need the moderation role to use this command.', config.accentWarn);
+    const seen = [...(interaction.member?.roles?.cache?.keys() ?? [])].join(', ') || 'none';
+    log(`Moderation: /moderation refused for ${interaction.user.tag} - it needs role ${config.moderationCommandRoleId}; the bot sees these roles on them: ${seen}`);
+    return reply(`You need the <@&${config.moderationCommandRoleId}> role to use this command.`, config.accentWarn);
   }
 
   const action = interaction.options.getString('action');
@@ -136,6 +139,14 @@ export async function handleModerationCommand(interaction) {
     log(`Moderation: switched ON by ${who}`);
   }
 
+  if (action === 'test_on') {
+    setTestMode(true);
+    log(`Moderation: TEST MODE switched ON by ${who} (protected users and roles are checked too, for 30 minutes)`);
+  } else if (action === 'test_off') {
+    setTestMode(false);
+    log(`Moderation: test mode switched OFF by ${who}`);
+  }
+
   const s = moderationStatus();
   const line =
     {
@@ -150,9 +161,10 @@ export async function handleModerationCommand(interaction) {
     [
       `### 🛡️ Chat moderation`,
       line,
+      testModeOn() ? `🧪 **TEST MODE ON** - protected users and roles are checked too (ends <t:${Math.floor(testModeUntil() / 1000)}:R>). Turn it off with \`/moderation test mode off\`.` : null,
       `**CPU use** (last ${s.windowSeconds}s): ${s.cpu.toFixed(1)}% of the machine (pauses above ${s.limit}%)`,
       `**Since the bot started:** ${s.checked} messages checked, ${s.deleted} deleted`,
-    ].join('\n'),
+    ].filter(Boolean).join('\n'),
     s.state === 'on' ? config.accentOk : config.accent,
   );
 }
@@ -238,7 +250,11 @@ export async function handleModeration(message) {
   if (!message.guild || message.author?.bot || message.webhookId || !message.content) return false;
   if (moderationStatus().state !== 'on') return false;
   const member = message.member ?? (await message.guild.members.fetch(message.author.id).catch(() => null));
-  if (!member || isExempt(member)) return false;
+  if (!member) return false;
+  if (!testModeOn() && isExempt(member)) {
+    if (config.moderationLogScores) log(`Moderation: skipped ${message.author.tag} - protected user/role (turn on test mode with /moderation to check them)`);
+    return false;
+  }
 
   const text = cleanText(message.content);
   if (!text) return false;
@@ -246,6 +262,9 @@ export async function handleModeration(message) {
   if (!scores) return false;
   stats.checked++;
   const verdict = decide(scores);
+  if (config.moderationLogScores) {
+    log(`Moderation: ${message.author.tag} in #${message.channel.name} | hate ${pct(scores.identity_hate)}% insult ${pct(scores.insult)}% obscene ${pct(scores.obscene)}% -> ${verdict.delete ? `DELETE (${verdict.reason})` : 'allowed'} | "${text.slice(0, 80)}"`);
+  }
   if (!verdict.delete) return false;
 
   const detail = `hate ${pct(scores.identity_hate)}% / insult ${pct(scores.insult)}% / obscene ${pct(scores.obscene)}%`;

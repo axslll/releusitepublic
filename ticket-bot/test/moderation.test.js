@@ -10,6 +10,7 @@ process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'modtest-')));
 const { cleanText, decide, deLeet, handleModeration, handleModerationCommand, moderationStatus, _setClassifier, _setState, _setNow, _guard, _resetStats } = await import('../src/moderation.js');
 const { store } = await import('../src/store.js');
 const { config } = await import('../src/config.js');
+const { testModeOn, setTestMode } = await import('../src/testmode.js');
 
 console.log = () => {};
 
@@ -208,7 +209,7 @@ test('/moderation: only the moderation role may use it', async () => {
   store.setSetting('moderationEnabled', true);
   const c = cmd('off', ['123']);
   await handleModerationCommand(c.interaction);
-  assert.ok(c.replies[0].includes('need the moderation role'));
+  assert.ok(c.replies[0].includes('role to use this command') && c.replies[0].includes(config.moderationCommandRoleId));
   assert.equal(moderationStatus().state, 'on', 'nothing changed');
 });
 
@@ -262,4 +263,51 @@ test('/moderation on is refused when the model is not available, and status says
   _setState('loading');
   c = cmd('status'); await handleModerationCommand(c.interaction);
   assert.ok(c.replies[0].includes('LOADING'));
+});
+
+/* ---------------- test mode + score log ---------------- */
+
+test('protected users are exempt - unless test mode is on, which expires by itself', async () => {
+  const w = world({ id: '880060587697123370' }); // a protected user
+  _setClassifier(async () => labels(0.9, 0.9, 0.99));
+  store.setSetting('moderationEnabled', true);
+  setTestMode(false);
+  assert.equal(await handleModeration(w.message('fuck you')), false, 'exempt normally');
+  setTestMode(true);
+  assert.equal(testModeOn(), true);
+  assert.equal(await handleModeration(w.message('fuck you')), true, 'checked in test mode');
+  store.setSetting('testModeUntil', Date.now() - 1000);
+  assert.equal(testModeOn(), false);
+  assert.equal(await handleModeration(w.message('fuck you')), false, 'exempt again after it expires');
+});
+
+test('/moderation test mode on / off', async () => {
+  _setClassifier(async () => ok());
+  setTestMode(false);
+  let c = cmd('test_on'); await handleModerationCommand(c.interaction);
+  assert.equal(testModeOn(), true);
+  assert.ok(c.replies[0].includes('TEST MODE ON'));
+  c = cmd('test_off'); await handleModerationCommand(c.interaction);
+  assert.equal(testModeOn(), false);
+  assert.ok(!c.replies[0].includes('TEST MODE ON'));
+});
+
+test('MOD_LOG_SCORES logs every checked message with its scores, and says why a skipped one was skipped', async () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (l) => lines.push(l);
+  config.moderationLogScores = true;
+  try {
+    _setClassifier(async () => labels(0.03, 0.12, 0.88));
+    store.setSetting('moderationEnabled', true);
+    setTestMode(false);
+    await handleModeration(world().message('fucking hell i forgot to do this'));
+    await handleModeration(world({ id: '880060587697123370' }).message('hello'));
+  } finally {
+    config.moderationLogScores = false;
+    console.log = original;
+  }
+  const log = lines.join('\n');
+  assert.ok(/hate 3% insult 12% obscene 88% -> allowed \| "fucking hell i forgot to do this"/.test(log), log);
+  assert.ok(log.includes('skipped') && log.includes('protected user/role'));
 });

@@ -31,6 +31,7 @@ export const config = {
     obscene: num(process.env.MOD_OBSCENE_THRESHOLD, 0.9), // ...that is also strongly profane
   },
   moderationTimeoutMs: num(process.env.MOD_TIMEOUT_MINUTES, 0) * 60 * 1000, // 0 = just delete
+  moderationLogScores: process.env.MOD_LOG_SCORES === 'true', // log every checked message with its scores (to tune the thresholds)
   moderationLogChannelId: process.env.MOD_LOG_CHANNEL_ID || null,
   // Moderation pauses itself when it uses more than this share of the whole machine's CPU, then resumes.
   moderationCpuLimit: num(process.env.MOD_CPU_LIMIT_PERCENT, 25),

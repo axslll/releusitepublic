@@ -57,7 +57,13 @@ const commands = [
         .setName('action')
         .setDescription('What to do')
         .setRequired(true)
-        .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }, { name: 'status', value: 'status' }),
+        .addChoices(
+          { name: 'on', value: 'on' },
+          { name: 'off', value: 'off' },
+          { name: 'status', value: 'status' },
+          { name: 'test mode on (also check protected users, 30 min)', value: 'test_on' },
+          { name: 'test mode off', value: 'test_off' },
+        ),
     ),
   new SlashCommandBuilder().setName('ticketstats').setDescription('Show how tickets are distributed across support staff'),
 ].map((c) => c.toJSON());
