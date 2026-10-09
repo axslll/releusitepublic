@@ -7,7 +7,7 @@ import { Collection } from 'discord.js';
 
 // The on/off switch is saved to disk, so run in a throw-away folder.
 process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'modtest-')));
-const { cleanText, decide, deLeet, handleModeration, handleModerationCommand, moderationStatus, _setClassifier, _setState, _setNow, _guard, _resetStats } = await import('../src/moderation.js');
+const { memoryTooSmall, cleanText, decide, deLeet, handleModeration, handleModerationCommand, moderationStatus, _setClassifier, _setState, _setNow, _guard, _resetStats } = await import('../src/moderation.js');
 const { store } = await import('../src/store.js');
 const { config } = await import('../src/config.js');
 const { testModeOn, setTestMode } = await import('../src/testmode.js');
@@ -257,7 +257,7 @@ test('/moderation on is refused when the model is not available, and status says
   _setClassifier(async () => ok());
   _setState('unavailable');
   let c = cmd('on'); await handleModerationCommand(c.interaction);
-  assert.ok(c.replies[0].includes("isn't installed"));
+  assert.ok(c.replies[0].includes("isn't available"));
   c = cmd('status'); await handleModerationCommand(c.interaction);
   assert.ok(c.replies[0].includes('UNAVAILABLE'));
   _setState('loading');
@@ -310,4 +310,14 @@ test('MOD_LOG_SCORES logs every checked message with its scores, and says why a 
   const log = lines.join('\n');
   assert.ok(/hate 3% insult 12% obscene 88% -> allowed \| "fucking hell i forgot to do this"/.test(log), log);
   assert.ok(log.includes('skipped') && log.includes('protected user/role'));
+});
+
+test('memoryTooSmall: only a known, small container limit blocks loading the model', () => {
+  const mb = (n) => n * 1024 * 1024;
+  assert.equal(memoryTooSmall(mb(512)), true, 'a 512 MB container is too small');
+  assert.equal(memoryTooSmall(mb(2048)), false);
+  assert.equal(memoryTooSmall(0), false, '0 = no limit known');
+  assert.equal(memoryTooSmall(undefined), false);
+  assert.equal(memoryTooSmall(2 ** 63), false, 'a huge "unlimited" value is not a limit');
+  assert.equal(memoryTooSmall(mb(512), 400), false, 'the threshold is adjustable');
 });

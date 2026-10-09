@@ -43,3 +43,15 @@ Edit `knowledge.md` – it's re-read on every AI reply, so no restart is needed.
 - Tickets are private to the opener, the staff member who accepted, and anyone called in with **Call Staff** (plus admins).
 - Support members must allow DMs from server members, otherwise their offer is skipped automatically.
 - Run the tests with `npm test`.
+
+## Hosting on Railway (or any Docker host)
+
+The repo has a `Dockerfile` and `railway.json` (at the top level and inside `ticket-bot/`), so Railway builds it without extra settings - the branch just has to contain them (`main` does).
+
+1. New Project -> **Deploy from GitHub repo** -> pick this repo.
+2. **Variables** -> **Raw Editor** -> paste the whole contents of your `.env` (the `.env` file is not in the repo, so Railway needs the values here).
+3. **Volumes** -> add a volume mounted at **`/app/data`** so open tickets and the `/moderation` on/off switch survive redeploys.
+4. Deploy. The moderation model is baked into the image; the bot logs `Logged in as ...` when it is up.
+
+Notes: the moderation model needs ~700 MB of RAM. If the container has less than 900 MB (`MOD_MIN_MEMORY_MB`) the bot starts with moderation OFF instead of crashing - give it more memory, or set `MODERATION=on` to force it. The CPU guard still applies. Everything else (tickets, AI, anti-ping) runs in well under 200 MB.
+

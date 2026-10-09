@@ -65,11 +65,21 @@ async function announce(text) {
   }
 }
 
+/** True when the container's memory limit is too small to hold the model (0 / huge means "no limit known"). */
+export function memoryTooSmall(limitBytes, minMb = config.moderationMinMemoryMb) {
+  return Number.isFinite(limitBytes) && limitBytes > 0 && limitBytes < 1e15 && limitBytes < minMb * 1024 * 1024;
+}
+
 /** Loads the model in the background at startup. Never throws. */
 export async function startModeration(client = null) {
   discordClient = client;
   if (!config.moderationEnabled) return log('Moderation is OFF (MODERATION=off)');
   if (state !== 'idle') return;
+  const limit = process.constrainedMemory?.();
+  if (process.env.MODERATION !== 'on' && memoryTooSmall(limit)) {
+    state = 'unavailable';
+    return log(`Moderation is OFF - this container only has ${Math.round(limit / 1048576)} MB of memory and the model needs ~700 MB, so loading it could crash the whole bot. Give it more memory, or set MODERATION=on to try anyway.`);
+  }
   state = 'loading';
   try {
     log(`Moderation: loading ${config.moderationModelId} (the first run downloads ~110 MB)...`);
@@ -132,7 +142,7 @@ export async function handleModerationCommand(interaction) {
     log(`Moderation: switched OFF by ${who}`);
   } else if (action === 'on') {
     if (!config.moderationEnabled) return reply('Moderation is disabled in the bot\'s settings (`MODERATION=off` in `.env`), so it cannot be turned on here.', config.accentWarn);
-    if (state === 'unavailable') return reply("The moderation model isn't installed on the bot's machine, so it cannot be turned on. Run `npm install` there and restart the bot.", config.accentWarn);
+    if (state === 'unavailable') return reply("The moderation model isn't available on the bot's machine (not installed, or not enough memory), so it cannot be turned on. Run `npm install` there, or give it more memory, and restart the bot.", config.accentWarn);
     store.setSetting('moderationEnabled', true);
     pausedUntil = 0; // turning it on also ends a CPU pause
     guard.reset();
@@ -154,7 +164,7 @@ export async function handleModerationCommand(interaction) {
       off: '🔴 **OFF** (turned off by staff)',
       paused: `⏸️ **PAUSED** for using too much CPU - resumes <t:${Math.floor((s.resumesAt ?? 0) / 1000)}:R> (or run \`/moderation on\`)`,
       disabled: '⚫ **DISABLED** in the bot settings (`MODERATION=off`)',
-      unavailable: '⚠️ **UNAVAILABLE** - the model is not installed on the bot\'s machine',
+      unavailable: '⚠️ **UNAVAILABLE** - the model is not installed on the bot\'s machine, or it does not have enough memory',
       loading: '⏳ **LOADING** the model...',
     }[s.state] ?? s.state;
   return reply(
