@@ -199,3 +199,35 @@ export function transcriptCard(message, filename) {
     .addFileComponents(new FileBuilder().setURL(`attachment://${filename}`));
   return { components: [c], flags: V2, allowedMentions: { parse: [] } };
 }
+
+/** The giveaway card: title, description, details and the Enter button (turns into the results when it ends). */
+export function giveawayMessage(g) {
+  const endsAt = Math.floor(g.endsAt / 1000);
+  const details = g.ended
+    ? [
+        `🏆 **Winner${g.winnerIds.length === 1 ? '' : 's'}:** ${g.winnerIds.length ? g.winnerIds.map((id) => `<@${id}>`).join(', ') : 'nobody - there were no valid entries'}`,
+        `🎟️ **Entries:** ${g.entries.length}`,
+        `👤 **Hosted by:** <@${g.hostId}>`,
+        `⏰ **Ended:** <t:${endsAt}:f>`,
+      ]
+    : [
+        `🏆 **Winners:** ${g.winners}`,
+        `⏰ **Ends:** <t:${endsAt}:R> (<t:${endsAt}:f>)`,
+        `🎟️ **Entries:** ${g.entries.length}`,
+        `👤 **Hosted by:** <@${g.hostId}>`,
+      ];
+  const enter = new ButtonBuilder()
+    .setCustomId(`giveaway:enter:${g.id}`)
+    .setLabel(g.ended ? 'Giveaway ended' : 'Enter Giveaway')
+    .setStyle(g.ended ? ButtonStyle.Secondary : ButtonStyle.Success)
+    .setEmoji('🎉')
+    .setDisabled(g.ended);
+  const c = new ContainerBuilder()
+    .setAccentColor(g.ended ? 0x4e5058 : config.accent)
+    .addTextDisplayComponents(text(`# 🎉 ${clip(g.title, 100)}`), text(clip(g.description, 1500)))
+    .addSeparatorComponents(divider())
+    .addTextDisplayComponents(text(details.join('\n')))
+    .addActionRowComponents(row(enter))
+    .addTextDisplayComponents(text(`-# ${config.botName} • giveaway #${g.id}`));
+  return { components: [c], flags: V2, allowedMentions: { parse: [] } };
+}

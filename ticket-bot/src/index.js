@@ -9,6 +9,7 @@ import {
 } from 'discord.js';
 import { aiEnabled } from './ai.js';
 import { handleProtectedPing } from './antiping.js';
+import { handleGiveawayAutocomplete, handleGiveawayButton, handleGiveawayCommand, sweepGiveaways } from './giveaway.js';
 import { handleModeration, handleModerationCommand, startModeration } from './moderation.js';
 import { config } from './config.js';
 import {
@@ -67,6 +68,16 @@ const commands = [
           { name: 'test mode off', value: 'test_off' },
         ),
     ),
+  new SlashCommandBuilder()
+    .setName('giveaway')
+    .setDescription('Host a giveaway (giveaway role only)')
+    .addStringOption((o) => o.setName('title').setDescription('What is being given away').setRequired(true).setMaxLength(100))
+    .addStringOption((o) => o.setName('description').setDescription('Details, rules, how to win').setRequired(true).setMaxLength(1000))
+    .addStringOption((o) => o.setName('duration').setDescription('How long it runs, e.g. 30m, 2h, 1d, 1d 12h').setRequired(true).setAutocomplete(true))
+    .addIntegerOption((o) => o.setName('winners').setDescription('How many winners').setRequired(true).setMinValue(1).setMaxValue(20))
+    .addChannelOption((o) =>
+      o.setName('channel').setDescription('Where to host it').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+    ),
   new SlashCommandBuilder().setName('ticketstats').setDescription('Show how tickets are distributed across support staff'),
 ].map((c) => c.toJSON());
 
@@ -87,6 +98,11 @@ client.once(Events.ClientReady, async (c) => {
   const sweep = () => sweepOffers(c).catch((e) => console.error('Offer sweep failed:', e));
   await sweep();
   setInterval(sweep, 30_000);
+
+  // Giveaways: end the ones that ran out of time (including any that ended while the bot was off).
+  const sweepG = () => sweepGiveaways(c).catch((e) => console.error('Giveaway sweep failed:', e));
+  await sweepG();
+  setInterval(sweepG, 10_000);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -96,7 +112,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (interaction.commandName === 'staffpanel') return await handleStaffPanel(interaction);
       if (interaction.commandName === 'moderation') return await handleModerationCommand(interaction);
       if (interaction.commandName === 'ticketpanel') return await handleTicketPanelCommand(interaction);
+      if (interaction.commandName === 'giveaway') return await handleGiveawayCommand(interaction);
+    } else if (interaction.isAutocomplete()) {
+      if (interaction.commandName === 'giveaway') return await handleGiveawayAutocomplete(interaction);
     } else if (interaction.isButton()) {
+      if (interaction.customId.startsWith('giveaway:')) return await handleGiveawayButton(interaction);
       if (interaction.customId.startsWith('offer:')) return await handleOffer(interaction);
       if (interaction.customId === 'ticket:open') return await handleOpenButton(interaction);
       if (interaction.customId.startsWith('ticket:')) return await handleTicketButton(interaction);
@@ -107,6 +127,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (err) {
     console.error('Interaction error:', err);
+    if (interaction.isAutocomplete?.()) return;
     const reply = notice('Something went wrong. Please try again.', { ephemeral: true });
     if (interaction.deferred || interaction.replied) await interaction.followUp(reply).catch(() => {});
     else await interaction.reply(reply).catch(() => {});

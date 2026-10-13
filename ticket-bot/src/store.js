@@ -3,7 +3,7 @@ import path from 'node:path';
 import { baselineTotal, pickStaff } from './assign.js';
 
 const FILE = path.resolve('data', 'tickets.json');
-let db = { counter: 0, tickets: {}, totals: {}, settings: {} };
+let db = { counter: 0, tickets: {}, totals: {}, settings: {}, giveawayCounter: 0, giveaways: {} };
 
 try {
   db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
@@ -24,6 +24,25 @@ export const store = {
   byNumber: (n) => db.tickets[n],
   openByUser: (userId) => Object.values(db.tickets).filter((t) => t.userId === userId),
   totals: () => db.totals,
+
+  /* ---- giveaways ---- */
+  createGiveaway(data) {
+    const id = ++db.giveawayCounter;
+    const giveaway = { id, ...data, messageId: null, entries: [], ended: false, endedAt: null, winnerIds: [], createdAt: Date.now() };
+    db.giveaways[id] = giveaway;
+    save();
+    return giveaway;
+  },
+  getGiveaway: (id) => db.giveaways[id],
+  allGiveaways: () => Object.values(db.giveaways),
+  updateGiveaway(giveaway, patch) {
+    Object.assign(giveaway, patch);
+    save();
+  },
+  removeGiveaway(giveaway) {
+    delete db.giveaways[giveaway.id];
+    save();
+  },
 
   /** Small persistent switches (e.g. whether staff turned moderation off). */
   getSetting: (key, fallback) => db.settings?.[key] ?? fallback,
