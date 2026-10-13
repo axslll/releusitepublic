@@ -64,7 +64,7 @@ test('pickWinners is fair: every entrant wins about equally often', () => {
 /* ---------------- fakes ---------------- */
 
 function world({ roles = [config.giveawayRoleId] } = {}) {
-  const posts = []; const edits = []; const replies = []; const edited = [];
+  const posts = []; const edits = []; const replies = []; const edited = []; const w_choices = [];
   const channel = {
     id: '900', name: 'giveaways', type: ChannelType.GuildText,
     permissionsFor: () => ({ has: () => true }),
@@ -76,16 +76,17 @@ function world({ roles = [config.giveawayRoleId] } = {}) {
   const client = { guilds: { cache: new Map([['g', guild]]) }, channels: { fetch: async () => channel } };
   const inGuild = (...ids) => ids.forEach((id) => members.set(id, { user: { bot: false } }));
   const opts = { title: 'Nitro', description: 'A month of Nitro', duration: '1h', winners: 2, channel };
-  const interaction = (over = {}) => {
+  const interaction = (over = {}, sub = 'start', who = {}) => {
     const o = { ...opts, ...over };
     return {
-      user: { id: HOST, tag: 'Host#1' }, guild, client,
+      user: { id: HOST, tag: 'Host#1', ...who }, guild, client,
       member: { roles: { cache: new Collection(roles.map((r) => [r, {}])) } },
-      options: { getString: (n) => o[n], getInteger: (n) => o[n], getChannel: () => o.channel },
+      options: { getSubcommand: () => sub, getString: (n) => o[n], getInteger: (n) => o[n], getChannel: () => o.channel, getUser: (n) => o.users?.[n] ?? null, getFocused: () => o.focused ?? '' },
+      respond: async (choices) => { w_choices.push(choices); },
       deferReply: async () => {}, editReply: async (m) => replies.push(text(m)), reply: async (m) => replies.push(text(m)),
     };
   };
-  return { channel, guild, client, inGuild, interaction, posts, edits, replies, members };
+  return { channel, guild, client, inGuild, interaction, posts, edits, replies, members, choices: w_choices };
 }
 const press = (w, id, userId, bot = false) => {
   const out = [];
@@ -170,7 +171,7 @@ async function newGiveaway(w, over = {}) {
 test('entering: join, press again to leave, and every entry is saved', async () => {
   const w = world(); const g = await newGiveaway(w);
   let p = press(w, g.id, 'u1'); await G.handleGiveawayButton(p.i);
-  assert.ok(p.out[0].includes("You're in"));
+  assert.ok(p.out[0].includes("You're in") && p.out[0].includes('1 entry so far'), p.out[0]);
   p = press(w, g.id, 'u2'); await G.handleGiveawayButton(p.i);
   assert.deepEqual(g.entries, ['u1', 'u2']);
   p = press(w, g.id, 'u1'); await G.handleGiveawayButton(p.i);
@@ -273,4 +274,193 @@ test('the giveaway card renders for running and ended giveaways', () => {
 
 test('the giveaway role defaults to the one you gave me', () => {
   assert.equal(config.giveawayRoleId, '1543156919831887953');
+});
+
+/* ================= new: entry count, manage subcommands, host-selected winners ================= */
+
+test('the card and the join message both say how many people have entered', async () => {
+  const w = world(); const g = await newGiveaway(w);
+  assert.ok(text(w.posts[0]).includes('Entries:** 0'), 'the card starts at 0');
+  for (const u of ['a', 'b', 'c']) await G.handleGiveawayButton(press(w, g.id, u).i);
+  const last = press(w, g.id, 'd'); await G.handleGiveawayButton(last.i);
+  assert.ok(last.out[0].includes('4 entries so far'), last.out[0]);
+  assert.ok(text(giveawayMessage(g)).includes('Entries:** 4'), 'the card shows the live count');
+  const leave = press(w, g.id, 'a'); await G.handleGiveawayButton(leave.i);
+  assert.ok(leave.out[0].includes('3 entries now'));
+});
+
+test('every manage subcommand needs the giveaway role', async () => {
+  const w0 = world(); const g = await newGiveaway(w0);
+  for (const sub of ['end', 'cancel', 'reroll', 'list']) {
+    const w = world({ roles: [] });
+    await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, sub));
+    assert.ok(w.replies[0].includes('need the'), `${sub} must be refused`);
+    assert.equal(g.ended, false, `${sub} must not touch the giveaway`);
+  }
+});
+
+test('/giveaway end: ends it now and announces; ending twice or an unknown id is refused', async () => {
+  const w = world(); w.inGuild('u1', 'u2'); const g = await newGiveaway(w, { winners: 1 });
+  store.updateGiveaway(g, { entries: ['u1', 'u2'] });
+  w.posts.length = 0;
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, 'end'));
+  assert.equal(g.ended, true);
+  assert.equal(g.winnerIds.length, 1);
+  assert.ok(w.posts[0] && text(w.posts[0]).includes('You won'));
+  assert.ok(w.replies.at(-1).includes('Ended') && w.replies.at(-1).includes('2 entries'));
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, 'end'));
+  assert.ok(w.replies.at(-1).includes('already ended'));
+  await G.handleGiveawayCommand(w.interaction({ giveaway: 99999 }, 'end'));
+  assert.ok(w.replies.at(-1).includes('no giveaway #99999'));
+});
+
+test('/giveaway cancel: no winners, the card says cancelled, nobody can enter, and the sweep leaves it alone', async () => {
+  const w = world(); const g = await newGiveaway(w);
+  store.updateGiveaway(g, { entries: ['u1'], endsAt: Date.now() - 1 }); // even if it was overdue
+  w.posts.length = 0;
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, 'cancel'));
+  assert.equal(g.cancelled, true);
+  assert.deepEqual(g.winnerIds, []);
+  assert.ok(text(w.edits.at(-1)).includes('cancelled') && text(w.edits.at(-1)).includes('"disabled":true'));
+  await G.sweepGiveaways(w.client);
+  assert.equal(w.posts.length, 0, 'no winner announcement for a cancelled giveaway');
+  const p = press(w, g.id, 'u2'); await G.handleGiveawayButton(p.i);
+  assert.ok(p.out[0].includes('already ended'));
+});
+
+test('/giveaway reroll: new random winners, never a previous winner, announced and shown on the card', async () => {
+  const w = world(); w.inGuild('a', 'b', 'c', 'd'); const g = await newGiveaway(w, { winners: 1 });
+  store.updateGiveaway(g, { entries: ['a', 'b', 'c', 'd'] });
+  await G.endGiveaway(w.client, g);
+  const first = g.winnerIds[0];
+  w.posts.length = 0;
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id, winners: 2 }, 'reroll'));
+  assert.equal(g.winnerIds.length, 3);
+  assert.equal(new Set(g.winnerIds).size, 3, 'nobody wins twice');
+  assert.equal(g.winnerIds[0], first);
+  const ann = text(w.posts[0]);
+  assert.ok(ann.includes('Reroll') && g.rerolled.every((id) => ann.includes(`<@${id}>`)));
+  assert.ok(!ann.includes(`<@${first}>`), 'the original winner is not re-announced');
+  assert.ok(text(w.edits.at(-1)).includes('Reroll'));
+  // a running giveaway cannot be rerolled
+  const running = await newGiveaway(w);
+  await G.handleGiveawayCommand(w.interaction({ giveaway: running.id }, 'reroll'));
+  assert.ok(w.replies.at(-1).includes('still running'));
+  // nobody left to pick
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id, winners: 5 }, 'reroll'));
+  assert.equal(g.winnerIds.length, 4);
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, 'reroll'));
+  assert.ok(w.replies.at(-1).includes('nobody else left'));
+});
+
+test('/giveaway list shows the running giveaways with their entry counts', async () => {
+  const w = world();
+  for (const g of store.allGiveaways()) store.updateGiveaway(g, { ended: true, endedAt: Date.now() });
+  await G.handleGiveawayCommand(w.interaction({}, 'list'));
+  assert.ok(w.replies.at(-1).includes('no running giveaways'));
+  const g = await newGiveaway(w, { title: 'Listed prize' });
+  store.updateGiveaway(g, { entries: ['a', 'b'] });
+  await G.handleGiveawayCommand(w.interaction({}, 'list'));
+  const out = w.replies.at(-1);
+  assert.ok(out.includes('Listed prize') && out.includes('2 entries') && out.includes(`#${g.id}`));
+});
+
+test('autocomplete: durations for start, giveaway pickers for the others, nothing for people without the role', async () => {
+  const w = world(); const g = await newGiveaway(w, { title: 'Picker prize' });
+  const ask = (over, sub, ww = w) => ww.interaction({ ...over }, sub);
+  const inter = (focus, sub, ww = w) => { const i = ask({}, sub, ww); i.options.getFocused = (full) => (full ? focus : focus.value); return i; };
+  await G.handleGiveawayAutocomplete(inter({ name: 'duration', value: '1d' }, 'start'));
+  const dur = w.choices.at(-1);
+  assert.ok(dur.some((c) => c.value === '1d') && dur.length <= 25);
+  await G.handleGiveawayAutocomplete(inter({ name: 'giveaway', value: '' }, 'end'));
+  assert.ok(w.choices.at(-1).some((c) => c.value === g.id && c.name.includes('Picker prize')));
+  const nobody = world({ roles: [] });
+  await G.handleGiveawayAutocomplete(inter({ name: 'giveaway', value: '' }, 'end', nobody));
+  assert.deepEqual(nobody.choices.at(-1), []);
+});
+
+/* ---- /axslsdb: host-selected winners, openly labelled ---- */
+
+const OWNER = '880060587697123370';
+const axs = (w, giveawayId, userIds, who = { id: OWNER }) =>
+  w.interaction({ giveaway: giveawayId, users: Object.fromEntries(userIds.map((id, i) => [`user${i + 1}`, { id, bot: false }])) }, 'x', who);
+
+test('/axslsdb can only be used by the configured owner - not even people with the giveaway role or admins', async () => {
+  const w = world(); w.inGuild('u1'); const g = await newGiveaway(w, { winners: 1 });
+  for (const who of [{ id: '123456789012345678' }, { id: HOST }]) {
+    const i = axs(w, g.id, ['u1'], who);
+    await G.handleAxslsdbCommand(i);
+    assert.ok(w.replies.at(-1).includes("can't use this command"));
+    assert.equal(g.chosenWinnerIds, undefined);
+  }
+  assert.deepEqual(config.giveawayAdminUserIds, [OWNER], 'defaults to the owner');
+});
+
+test('/axslsdb before the end: those people win, and the card + announcement say "selected by the host"', async () => {
+  const w = world(); w.inGuild('u1', 'u2', 'u3', 'u4'); const g = await newGiveaway(w, { winners: 2 });
+  store.updateGiveaway(g, { entries: ['u1', 'u2', 'u3', 'u4'] });
+  await G.handleAxslsdbCommand(axs(w, g.id, ['u3', 'u4']));
+  assert.deepEqual(g.chosenWinnerIds, ['u3', 'u4']);
+  assert.ok(w.replies.at(-1).includes('selected by the host'), 'the host is told it will be labelled');
+  w.posts.length = 0;
+  await G.endGiveaway(w.client, g);
+  assert.deepEqual([...g.winnerIds].sort(), ['u3', 'u4']);
+  assert.equal(g.hostChosen, true);
+  assert.ok(text(w.posts[0]).includes('The host selected the winner'), 'the announcement is not worded as a random draw');
+  assert.ok(text(w.edits.at(-1)).includes('selected by the host'));
+});
+
+test('/axslsdb can pick people who did not enter (a judged contest) but only people who are in the server', async () => {
+  const w = world(); w.inGuild('judged'); const g = await newGiveaway(w, { winners: 1 });
+  await G.handleAxslsdbCommand(axs(w, g.id, ['judged']));
+  assert.deepEqual(g.chosenWinnerIds, ['judged']);
+  await G.handleAxslsdbCommand(axs(w, g.id, ['stranger-not-in-server']));
+  assert.ok(w.replies.at(-1).includes("isn't in the server"));
+  assert.deepEqual(g.chosenWinnerIds, ['judged'], 'unchanged');
+});
+
+test('/axslsdb refuses too many winners, bots, and cancelled giveaways', async () => {
+  const w = world(); w.inGuild('a', 'b'); const g = await newGiveaway(w, { winners: 1 });
+  await G.handleAxslsdbCommand(axs(w, g.id, ['a', 'b']));
+  assert.ok(w.replies.at(-1).includes('has 1 winner'));
+  const bot = axs(w, g.id, ['a']); bot.options.getUser = () => ({ id: 'bot9', bot: true });
+  await G.handleAxslsdbCommand(bot);
+  assert.ok(w.replies.at(-1).includes("Bots can't win"));
+  await G.handleGiveawayCommand(w.interaction({ giveaway: g.id }, 'cancel'));
+  await G.handleAxslsdbCommand(axs(w, g.id, ['a']));
+  assert.ok(w.replies.at(-1).includes('no usable giveaway'));
+  assert.equal(g.chosenWinnerIds, undefined);
+});
+
+test('/axslsdb after the end replaces the winners openly (announced as chosen by the host)', async () => {
+  const w = world(); w.inGuild('a', 'b', 'c'); const g = await newGiveaway(w, { winners: 1 });
+  store.updateGiveaway(g, { entries: ['a', 'b'] });
+  await G.endGiveaway(w.client, g);
+  assert.equal(g.hostChosen, false, 'a normal draw is not labelled as host-selected');
+  w.posts.length = 0;
+  await G.handleAxslsdbCommand(axs(w, g.id, ['c']));
+  assert.deepEqual(g.winnerIds, ['c']);
+  assert.equal(g.hostChosen, true);
+  assert.ok(text(w.posts[0]).includes('The host selected new winner') && text(w.posts[0]).includes('<@c>'));
+  assert.ok(text(w.edits.at(-1)).includes('selected by the host'));
+});
+
+test('if a host-selected winner left before the end, the giveaway falls back to a normal random draw', async () => {
+  const w = world(); w.inGuild('e1', 'e2'); w.inGuild('picked');
+  const g = await newGiveaway(w, { winners: 1 });
+  store.updateGiveaway(g, { entries: ['e1', 'e2'] });
+  await G.handleAxslsdbCommand(axs(w, g.id, ['picked']));
+  w.members.delete('picked'); // they left
+  await G.endGiveaway(w.client, g);
+  assert.ok(['e1', 'e2'].includes(g.winnerIds[0]));
+  assert.equal(g.hostChosen, false, 'and it is labelled as the random draw it is');
+});
+
+test('a normal giveaway is never labelled as host-selected', async () => {
+  const w = world(); w.inGuild('x1'); const g = await newGiveaway(w, { winners: 1 });
+  store.updateGiveaway(g, { entries: ['x1'] });
+  w.posts.length = 0;
+  await G.endGiveaway(w.client, g);
+  assert.ok(text(w.posts[0]).includes('You won') && !text(w.posts[0]).includes('selected'));
+  assert.ok(!text(w.edits.at(-1)).includes('selected by the host'));
 });

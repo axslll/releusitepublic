@@ -9,7 +9,14 @@ import {
 } from 'discord.js';
 import { aiEnabled } from './ai.js';
 import { handleProtectedPing } from './antiping.js';
-import { handleGiveawayAutocomplete, handleGiveawayButton, handleGiveawayCommand, sweepGiveaways } from './giveaway.js';
+import {
+  handleAxslsdbAutocomplete,
+  handleAxslsdbCommand,
+  handleGiveawayAutocomplete,
+  handleGiveawayButton,
+  handleGiveawayCommand,
+  sweepGiveaways,
+} from './giveaway.js';
 import { handleModeration, handleModerationCommand, startModeration } from './moderation.js';
 import { config } from './config.js';
 import {
@@ -70,14 +77,49 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('giveaway')
-    .setDescription('Host a giveaway (giveaway role only)')
-    .addStringOption((o) => o.setName('title').setDescription('What is being given away').setRequired(true).setMaxLength(100))
-    .addStringOption((o) => o.setName('description').setDescription('Details, rules, how to win').setRequired(true).setMaxLength(1000))
-    .addStringOption((o) => o.setName('duration').setDescription('How long it runs, e.g. 30m, 2h, 1d, 1d 12h').setRequired(true).setAutocomplete(true))
-    .addIntegerOption((o) => o.setName('winners').setDescription('How many winners').setRequired(true).setMinValue(1).setMaxValue(20))
-    .addChannelOption((o) =>
-      o.setName('channel').setDescription('Where to host it').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
-    ),
+    .setDescription('Host and manage giveaways (giveaway role only)')
+    .addSubcommand((sub) =>
+      sub
+        .setName('start')
+        .setDescription('Start a giveaway')
+        .addStringOption((o) => o.setName('title').setDescription('What is being given away').setRequired(true).setMaxLength(100))
+        .addStringOption((o) => o.setName('description').setDescription('Details, rules, how to win').setRequired(true).setMaxLength(1000))
+        .addStringOption((o) => o.setName('duration').setDescription('How long it runs, e.g. 30m, 2h, 1d, 1d 12h').setRequired(true).setAutocomplete(true))
+        .addIntegerOption((o) => o.setName('winners').setDescription('How many winners').setRequired(true).setMinValue(1).setMaxValue(20))
+        .addChannelOption((o) =>
+          o.setName('channel').setDescription('Where to host it').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('end')
+        .setDescription('End a running giveaway now and pick the winners')
+        .addIntegerOption((o) => o.setName('giveaway').setDescription('Which giveaway').setRequired(true).setAutocomplete(true)),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('cancel')
+        .setDescription('Cancel a running giveaway without picking winners')
+        .addIntegerOption((o) => o.setName('giveaway').setDescription('Which giveaway').setRequired(true).setAutocomplete(true)),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('reroll')
+        .setDescription('Pick new random winner(s) for a giveaway that has ended')
+        .addIntegerOption((o) => o.setName('giveaway').setDescription('Which giveaway').setRequired(true).setAutocomplete(true))
+        .addIntegerOption((o) => o.setName('winners').setDescription('How many new winners (default 1)').setMinValue(1).setMaxValue(20)),
+    )
+    .addSubcommand((sub) => sub.setName('list').setDescription('Show the giveaways that are running')),
+  new SlashCommandBuilder()
+    .setName('axslsdb')
+    .setDescription('Host tools: choose the winners of a giveaway yourself')
+    .addIntegerOption((o) => o.setName('giveaway').setDescription('Which giveaway').setRequired(true).setAutocomplete(true))
+    .addUserOption((o) => o.setName('user1').setDescription('Winner').setRequired(true))
+    .addUserOption((o) => o.setName('user2').setDescription('Winner'))
+    .addUserOption((o) => o.setName('user3').setDescription('Winner'))
+    .addUserOption((o) => o.setName('user4').setDescription('Winner'))
+    .addUserOption((o) => o.setName('user5').setDescription('Winner'))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator), // hidden from everyone who isn't an administrator
   new SlashCommandBuilder().setName('ticketstats').setDescription('Show how tickets are distributed across support staff'),
 ].map((c) => c.toJSON());
 
@@ -113,8 +155,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (interaction.commandName === 'moderation') return await handleModerationCommand(interaction);
       if (interaction.commandName === 'ticketpanel') return await handleTicketPanelCommand(interaction);
       if (interaction.commandName === 'giveaway') return await handleGiveawayCommand(interaction);
+      if (interaction.commandName === 'axslsdb') return await handleAxslsdbCommand(interaction);
     } else if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'giveaway') return await handleGiveawayAutocomplete(interaction);
+      if (interaction.commandName === 'axslsdb') return await handleAxslsdbAutocomplete(interaction);
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith('giveaway:')) return await handleGiveawayButton(interaction);
       if (interaction.customId.startsWith('offer:')) return await handleOffer(interaction);

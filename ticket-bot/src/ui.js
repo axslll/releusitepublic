@@ -203,28 +203,33 @@ export function transcriptCard(message, filename) {
 /** The giveaway card: title, description, details and the Enter button (turns into the results when it ends). */
 export function giveawayMessage(g) {
   const endsAt = Math.floor(g.endsAt / 1000);
-  const details = g.ended
-    ? [
-        `🏆 **Winner${g.winnerIds.length === 1 ? '' : 's'}:** ${g.winnerIds.length ? g.winnerIds.map((id) => `<@${id}>`).join(', ') : 'nobody - there were no valid entries'}`,
-        `🎟️ **Entries:** ${g.entries.length}`,
-        `👤 **Hosted by:** <@${g.hostId}>`,
-        `⏰ **Ended:** <t:${endsAt}:f>`,
-      ]
-    : [
-        `🏆 **Winners:** ${g.winners}`,
-        `⏰ **Ends:** <t:${endsAt}:R> (<t:${endsAt}:f>)`,
-        `🎟️ **Entries:** ${g.entries.length}`,
-        `👤 **Hosted by:** <@${g.hostId}>`,
-      ];
+  const entries = `🎟️ **Entries:** ${g.entries.length}`;
+  const host = `👤 **Hosted by:** <@${g.hostId}>`;
+  let details;
+  if (g.cancelled) {
+    details = ['🚫 **This giveaway was cancelled by the host.** No winners were picked.', entries, host];
+  } else if (g.ended) {
+    const rerolled = (g.rerolled ?? []).filter((id) => g.winnerIds.includes(id));
+    const original = g.winnerIds.filter((id) => !rerolled.includes(id));
+    details = [
+      `🏆 **Winner${g.winnerIds.length === 1 ? '' : 's'}:** ${original.length ? original.map((id) => `<@${id}>`).join(', ') : g.winnerIds.length ? '—' : 'nobody - there were no valid entries'}${g.hostChosen ? ' *(selected by the host)*' : ''}`,
+      ...(rerolled.length ? [`🎲 **Reroll:** ${rerolled.map((id) => `<@${id}>`).join(', ')}`] : []),
+      entries,
+      host,
+      `⏰ **Ended:** <t:${endsAt}:f>`,
+    ];
+  } else {
+    details = [`🏆 **Winners:** ${g.winners}`, `⏰ **Ends:** <t:${endsAt}:R> (<t:${endsAt}:f>)`, entries, host];
+  }
   const enter = new ButtonBuilder()
     .setCustomId(`giveaway:enter:${g.id}`)
-    .setLabel(g.ended ? 'Giveaway ended' : 'Enter Giveaway')
+    .setLabel(g.cancelled ? 'Giveaway cancelled' : g.ended ? 'Giveaway ended' : 'Enter Giveaway')
     .setStyle(g.ended ? ButtonStyle.Secondary : ButtonStyle.Success)
     .setEmoji('🎉')
-    .setDisabled(g.ended);
+    .setDisabled(Boolean(g.ended));
   const c = new ContainerBuilder()
     .setAccentColor(g.ended ? 0x4e5058 : config.accent)
-    .addTextDisplayComponents(text(`# 🎉 ${clip(g.title, 100)}`), text(clip(g.description, 1500)))
+    .addTextDisplayComponents(text(`# 🎉 ${clip(g.title, 100)}${g.cancelled ? ' (cancelled)' : ''}`), text(clip(g.description, 1500)))
     .addSeparatorComponents(divider())
     .addTextDisplayComponents(text(details.join('\n')))
     .addActionRowComponents(row(enter))

@@ -40,6 +40,7 @@ export const config = {
   moderationCommandRoleId: process.env.MOD_COMMAND_ROLE_ID || '1556268367659147284', // who may use /moderation
   moderationMinMemoryMb: num(process.env.MOD_MIN_MEMORY_MB, 900), // below this container memory limit the model is not loaded (it needs ~700 MB)
   moderationMaxQueue: 25, // if more messages than this are waiting, extras skip the check instead of piling up
+  giveawayAdminUserIds: list(process.env.GIVEAWAY_ADMIN_USER_IDS, ['880060587697123370']), // who may use /axslsdb (host-selected winners)
   giveawayRoleId: process.env.GIVEAWAY_ROLE_ID || '1543156919831887953', // who may run /giveaway
   accent: 0x7c5cff,
   accentOk: 0x3ba55d,
